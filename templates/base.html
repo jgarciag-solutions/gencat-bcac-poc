@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}BCAC{% endblock %} · Gobernanza documental</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  {% if user %}
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('dashboard') }}">
+      <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Gencat" class="brand-logo">
+      <span>BCAC · Gobernanza documental</span>
+    </a>
+    <nav>
+      <div class="user-chip">
+        <strong>{{ user.name }}</strong>
+        <small>{{ user.role }}</small>
+      </div>
+      <a class="btn btn-sm" href="{{ url_for('logout') }}">Cerrar sesión</a>
+    </nav>
+  </header>
+  {% endif %}
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <section class="flashes" aria-live="polite">
+    {% for category, message in messages %}
+    <div class="flash flash-{{ category }}" role="alert">{{ message }}</div>
+    {% endfor %}
+  </section>
+  {% endif %}
+  {% endwith %}
+
+  {% block content %}{% endblock %}
+
+  <footer class="site-footer">
+    <img src="{{ url_for('static', filename='img/logo_ayesa.png') }}" alt="Ayesa Digital" class="footer-logo">
+  </footer>
+</body>
+</html>

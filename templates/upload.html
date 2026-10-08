@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Subir documento{% endblock %}
+{% block content %}
+<main>
+  <header class="page-header">
+    <div>
+      <h1>Subir documento</h1>
+      <p>El documento entrará en el flujo en estado «En elaboración».</p>
+    </div>
+  </header>
+
+  <section class="card">
+    <form class="card-body" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+      <div class="form-grid">
+        <div class="field full">
+          <label for="file">Archivo</label>
+          <input id="file" name="file" type="file" required accept="{% for e in extensions %}.{{ e }}{% if not loop.last %},{% endif %}{% endfor %}">
+          <span class="hint">Formatos: {{ extensions | join(', ') }}. Máximo 16 MB.</span>
+        </div>
+        <div class="field full">
+          <label for="title">Título</label>
+          <input id="title" name="title" type="text" required value="{{ form.get('title', '') }}">
+        </div>
+        <div class="field full">
+          <label for="content_type">Tipo de contenido</label>
+          <select id="content_type" name="content_type" required>
+            <option value="" disabled {{ 'selected' if not form.get('content_type') }}>Selecciona…</option>
+            {% for ct in content_types %}
+            <option value="{{ ct }}" {{ 'selected' if form.get('content_type') == ct }}>{{ ct }}</option>
+            {% endfor %}
+          </select>
+          <span class="hint">Base: Elaboración → Unidad Finalista → Gestor del Conocimiento → Publicada. Adaptado: Elaboración → Responsable de Canal → Publicada.</span>
+        </div>
+        <div class="field full" id="field-taxonomy" hidden>
+          <label for="taxonomy">Taxonomía (N1 &gt; N2 &gt; N3)</label>
+          <select id="taxonomy" name="taxonomy" required disabled>
+            <option value="" disabled {{ 'selected' if not form.get('taxonomy') }}>Selecciona…</option>
+            {% for t in taxonomies %}
+            <option value="{{ t }}" {{ 'selected' if form.get('taxonomy') == t }}>{{ t }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field full" id="field-source" hidden>
+          <label for="source">Fuente original (documentos base publicados)</label>
+          <select id="source" name="source" multiple size="{{ [base_docs | length, 3] | max if base_docs else 3 }}" disabled>
+            {% for d in base_docs %}
+            <option value="{{ d.id }}" data-taxonomy='{{ d.taxonomy | tojson }}'
+                    {{ 'selected' if d.id in selected_sources }}>{{ d.title }} (v{{ d.version }})</option>
+            {% endfor %}
+          </select>
+          <span class="hint">Mantén ⌘ (Mac) o Ctrl pulsado para seleccionar varios.</span>
+          <span class="field-error" id="source-empty" role="alert" hidden>No hay documentos base publicados disponibles para adaptar</span>
+        </div>
+        <div class="field full" id="field-inherited" hidden>
+          <label for="inherited-taxonomy">Taxonomía heredada</label>
+          <textarea id="inherited-taxonomy" class="readonly" rows="2" readonly placeholder="Se completará al seleccionar las fuentes originales"></textarea>
+          <span class="hint">Unión (sin duplicados) de las taxonomías de las fuentes seleccionadas. No es editable.</span>
+        </div>
+        <div class="field">
+          <label for="department">Departamento responsable</label>
+          <select id="department" name="department" required>
+            <option value="" disabled {{ 'selected' if not form.get('department') }}>Selecciona…</option>
+            {% for dep in departments %}
+            <option value="{{ dep }}" {{ 'selected' if form.get('department') == dep }}>{{ dep }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="date">Fecha</label>
+          <input id="date" name="date" type="date" required value="{{ form.get('date') or today }}">
+        </div>
+      </div>
+      <div class="form-actions">
+        <a class="btn" href="{{ url_for('dashboard') }}">Cancelar</a>
+        <button type="submit" class="btn btn-primary">Subir e iniciar flujo</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var type = document.getElementById('content_type');
+    var taxGroup = document.getElementById('field-taxonomy');
+    var tax = document.getElementById('taxonomy');
+    var srcGroup = document.getElementById('field-source');
+    var src = document.getElementById('source');
+    var srcEmpty = document.getElementById('source-empty');
+    var inhGroup = document.getElementById('field-inherited');
+    var inherited = document.getElementById('inherited-taxonomy');
+    var submit = document.querySelector('form button[type="submit"]');
+
+    // Unión sin duplicados de data-taxonomy (array JSON) de las opciones seleccionadas.
+    function updateInherited() {
+      var all = [];
+      Array.prototype.forEach.call(src.selectedOptions, function (o) {
+        try { JSON.parse(o.dataset.taxonomy || '[]').forEach(function (t) { if (all.indexOf(t) < 0) all.push(t); }); }
+        catch (e) { /* data-taxonomy inválido: se ignora */ }
+      });
+      inherited.value = all.join('\n');
+    }
+
+    function update() {
+      var base = type.value === 'Base';
+      var adapted = type.value === 'Adaptado';
+
+      taxGroup.hidden = !base;
+      tax.disabled = !base;               // un campo disabled no se envía ni se valida
+
+      srcGroup.hidden = inhGroup.hidden = !adapted;
+      src.disabled = !adapted;
+      src.required = adapted && src.options.length > 0;
+
+      var noSources = adapted && src.options.length === 0;
+      srcEmpty.hidden = !noSources;
+      src.hidden = noSources;
+      submit.disabled = noSources;        // sin bases publicadas no se puede adaptar nada
+
+      if (adapted) updateInherited();
+    }
+
+    type.addEventListener('change', update);
+    src.addEventListener('change', updateInherited);
+    update();
+  });
+</script>
+{% endblock %}

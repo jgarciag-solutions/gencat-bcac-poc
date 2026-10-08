@@ -1,0 +1,414 @@
+{% extends "base.html" %}
+{% block title %}Panel{% endblock %}
+{% block content %}
+<main class="dashboard-main">
+  <header class="page-header">
+    <div>
+      <h1>Documentos</h1>
+      <p>Estado del flujo de gobernanza documental, por rol.</p>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Flujo por rol">
+    {% for tab in tabs %}
+    <button type="button" class="tab-btn{{ ' active' if loop.first }}" role="tab"
+            id="btn-tab-{{ loop.index }}" data-target="tab-{{ loop.index }}"
+            aria-controls="tab-{{ loop.index }}" aria-selected="{{ 'true' if loop.first else 'false' }}">
+      {{ tab.role }}
+      <span class="tab-count">{{ tab.docs | length }}</span>
+    </button>
+    {% endfor %}
+  </nav>
+
+  {% for tab in tabs %}
+  <section class="tab-pane{{ ' active' if loop.first }}" id="tab-{{ loop.index }}" role="tabpanel"
+           aria-labelledby="btn-tab-{{ loop.index }}">
+    <div class="pane-header">
+      <p>Pendientes de acción · <span class="badge badge-{{ loop.index }}">{{ tab.status }}</span></p>
+      {% if loop.first %}
+      <a class="btn btn-primary" href="{{ url_for('upload') }}">+ Subir Nuevo Documento</a>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Título</th>
+              <th>Taxonomía</th>
+              <th>Fuente original</th>
+              <th>Departamento</th>
+              <th>Tipo</th>
+              <th>Versión</th>
+              <th>Fecha</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in tab.docs %}
+            <tr>
+              <td>
+                <a class="doc-title" href="{{ url_for('download', doc_id=d.id) }}">{{ d.title }}</a>
+                <small>{{ d.filename }}</small>
+                {% if tab.status == 'En elaboración' and d.observations %}
+                <div class="obs-alert" role="alert"><strong>Devuelto:</strong> {{ d.observations }}</div>
+                {% endif %}
+              </td>
+              <td>{{ d.taxonomy | join(', ') or '—' }}</td>
+              <td>{{ d.source_titles | join(', ') or '—' }}</td>
+              <td>{{ d.department }}</td>
+              <td>{{ d.content_type }}</td>
+              <td>v{{ d.version }}</td>
+              <td>{{ d.date }}</td>
+              <td><span class="badge badge-{{ d.badge }}">{{ d.status }}</span></td>
+              <td>
+                <div class="actions">
+                  {% set needs_normative = tab.status == 'En validación - Pte. Unidad Finalista' %}
+                  {% if d.can_advance %}
+                  <form method="post" action="{{ url_for('avanzar_estado', doc_id=d.id) }}">
+                    <button type="submit" class="btn btn-success btn-sm">{{ d.action }}</button>
+                  </form>
+                  {% endif %}
+                  {% if needs_normative and d.filename.lower().endswith('.pdf') %}
+                  <button type="button" class="btn btn-sm js-normative"
+                          data-url="{{ url_for('api_validate_normative', doc_id=d.id) }}"
+                          data-done="{{ 'true' if d.normative_analysis_done else 'false' }}"
+                          data-result="{{ d.normative_analysis_result or '' }}"
+                          data-clarity="{{ d.analysis_result or '' }}">{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
+                  {% endif %}
+                  {% if tab.status == 'En validación - Pte. Responsable Canal' %}
+                  <button type="button" class="btn btn-sm js-fidelity"
+                          data-url="{{ url_for('api_check_fidelity', doc_id=d.id) }}"
+                          data-done="{{ 'true' if d.fidelity_analysis_done else 'false' }}"
+                          data-result="{{ d.fidelity_analysis_result or '' }}">{{ 'Ver Informe Fidelidad' if d.fidelity_analysis_done else 'Comprobar Fidelidad' }}</button>
+                  {% endif %}
+                  {% if tab.status == 'En validación - Pte. Gestor Conocimiento' %}
+                  <button type="button" class="btn btn-sm js-duplicity"
+                          data-url="{{ url_for('api_detect_duplicity', doc_id=d.id) }}"
+                          data-done="{{ 'true' if d.duplicity_analysis_done else 'false' }}"
+                          data-result="{{ d.duplicity_result or '' }}">{{ 'Ver informe' if d.duplicity_analysis_done else 'Detección de duplicidades' }}</button>
+                  {% endif %}
+                  {% if tab.status == 'En elaboración' and d.filename.lower().endswith('.pdf') %}
+                  <button type="button" class="btn btn-sm js-analyze"
+                          data-url="{{ url_for('api_analyze', doc_id=d.id) }}"
+                          data-done="{{ 'true' if d.analysis_done else 'false' }}"
+                          data-result="{{ d.analysis_result or '' }}">{{ 'Ver informe' if d.analysis_done else 'Analizar con IA' }}</button>
+                  {% endif %}
+                  {% if tab.status in validation_states %}
+                  <button type="button" class="btn btn-danger btn-sm js-reject"
+                          data-action="{{ url_for('rechazar', doc_id=d.id) }}"
+                          data-title="{{ d.title }}">Rechazar</button>
+                  {% endif %}
+                  {% if tab.status == 'Publicada' %}
+                  <form method="post" action="{{ url_for('versionar', doc_id=d.id) }}">
+                    <button type="submit" class="btn btn-sm">Crear nueva versión</button>
+                  </form>
+                 <form method="post" action="{{ url_for('retirar', doc_id=d.id) }}">
+                    <button type="submit" class="btn btn-danger btn-sm">Retirar contenido</button>
+                  </form>
+                  {% endif %}
+                  {% if not d.can_advance and tab.status not in validation_states and tab.status != 'Publicada' %}
+                  <small>—</small>
+                  {% endif %}
+                </div>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9" class="empty">No hay documentos en esta fase.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  {% endfor %}
+</main>
+
+<dialog id="reject-dialog" class="modal">
+  <form method="post" id="reject-form">
+    <h2>Rechazar documento</h2>
+    <p id="reject-title" class="hint"></p>
+    <div class="field">
+      <label for="reject-reason">Motivo de la devolución</label>
+      <textarea id="reject-reason" name="motivo" rows="4" maxlength="500" required></textarea>
+    </div>
+    <div class="form-actions">
+      <button type="button" class="btn" id="reject-cancel">Cancelar</button>
+      <button type="submit" class="btn btn-danger">Rechazar</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script>
+  (function () {
+    var buttons = document.querySelectorAll('.tab-btn');
+    var panes = document.querySelectorAll('.tab-pane');
+
+    function activate(id) {
+      var found = false;
+      buttons.forEach(function (b) {
+        var on = b.dataset.target === id;
+        found = found || on;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      if (!found) return;
+      panes.forEach(function (p) { p.classList.toggle('active', p.id === id); });
+    }
+
+    buttons.forEach(function (b) {
+      b.addEventListener('click', function () {
+        activate(b.dataset.target);
+        history.replaceState(null, '', '#' + b.dataset.target);
+      });
+    });
+
+    if (location.hash) activate(location.hash.slice(1));
+
+    var dialog = document.getElementById('reject-dialog');
+    var form = document.getElementById('reject-form');
+    document.querySelectorAll('.js-reject').forEach(function (b) {
+      b.addEventListener('click', function () {
+        form.action = b.dataset.action;
+        document.getElementById('reject-title').textContent = b.dataset.title;
+        document.getElementById('reject-reason').value = '';
+        dialog.showModal();
+      });
+    });
+    document.getElementById('reject-cancel').addEventListener('click', function () { dialog.close(); });
+
+    // Informes de IA (/api/analyze y /api/validate_normative) en filas desplegables.
+    var SUCCESS_RE = /no s['’]han trobat contradiccions|el document és clar|se ajusta a la normativa vigente|no se han detectado duplicidades|totalmente fiel a las fuentes originales/i;
+    var DANGER_RE = /incoher[eè]nci|contradiccion|contradicci[oó]|duplicidad detectada|contenido similar detectado|coincidencia exacta/i;
+    var FINDING_RE = /^\s*\*\*\d+\./m;
+    var KINDS = {
+      analyze: { key: 'analysis_result', label: 'Analizar con IA', title: 'Auditoría de claridad (IA)' },
+      normative: { key: 'normative_analysis_result', label: 'Validación normativa', title: 'Validación normativa (IA)' },
+      duplicity: { key: 'duplicity_result', label: 'Detección de duplicidades', title: 'Detección de duplicidades' },
+      fidelity: { key: 'fidelity_analysis_result', label: 'Comprobar Fidelidad', doneLabel: 'Ver Informe Fidelidad', title: 'Comprobación de fidelidad (IA)' }
+    };
+
+    function kindOf(btn) {
+      if (btn.classList.contains('js-normative')) return KINDS.normative;
+      if (btn.classList.contains('js-duplicity')) return KINDS.duplicity;
+      if (btn.classList.contains('js-fidelity')) return KINDS.fidelity;
+      return KINDS.analyze;
+    }
+
+    // Éxito / alerta según el contenido. Una lista de hallazgos numerados siempre es alerta
+    // (la frase de éxito también contiene "incoherències" o "contradicciones").
+    function alertClass(md) {
+      if (FINDING_RE.test(md)) return 'alert-danger';
+      if (SUCCESS_RE.test(md)) return 'alert-success';
+      if (DANGER_RE.test(md)) return 'alert-danger';
+      return 'alert-neutral';
+    }
+
+    // Convierte "**1. título**" + lista en tarjetas de hallazgo.
+    function groupFindings(root) {
+      Array.prototype.slice.call(root.querySelectorAll('p')).forEach(function (p) {
+        var strong = p.firstElementChild;
+        if (!strong || strong.tagName !== 'STRONG' || !/^\d+\./.test(p.textContent.trim())) return;
+        var card = document.createElement('div');
+        card.className = 'finding';
+        p.before(card);
+        card.appendChild(p);
+        if (card.nextElementSibling && card.nextElementSibling.tagName === 'UL') card.appendChild(card.nextElementSibling);
+      });
+    }
+
+    function renderReport(title, md) {
+      var section = document.createElement('section');
+      section.className = 'report';
+      var h = document.createElement('h4');
+      h.textContent = title;
+      var box = document.createElement('div');
+      box.className = alertClass(md);
+      var body = document.createElement('div');
+      body.className = 'md';
+      if (window.marked && window.DOMPurify) {
+        body.innerHTML = DOMPurify.sanitize(marked.parse(md)); // la salida del LLM se sanea siempre
+        groupFindings(body);
+      } else {
+        body.style.whiteSpace = 'pre-wrap'; // sin librerías (offline): texto plano
+        body.textContent = md;
+      }
+      box.appendChild(body);
+      section.appendChild(h);
+      section.appendChild(box);
+      return section;
+    }
+
+    function existingRow(btn) {
+      var next = btn.closest('tr').nextElementSibling;
+      return next && next.classList.contains('expandable-row') ? next : null;
+    }
+
+    function insertRow(btn, nodes) {
+      var tr = btn.closest('tr');
+      var old = existingRow(btn);
+      if (old) old.remove();
+      var row = document.createElement('tr');
+      row.className = 'expandable-row';
+      var cell = document.createElement('td');
+      cell.colSpan = tr.children.length; // ocupa todas las columnas (colspan no admite "100%")
+      var wrap = document.createElement('div');
+      wrap.className = 'report-container';
+      nodes.forEach(function (n) { wrap.appendChild(n); });
+      cell.appendChild(wrap);
+      row.appendChild(cell);
+      tr.after(row);
+    }
+
+    function showReport(btn) {
+      var kind = kindOf(btn);
+      var nodes = [];
+      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referente Departamental', btn.dataset.clarity));
+      nodes.push(renderReport(kind.title, btn.dataset.result));
+      if (kind !== KINDS.normative) { // re-ejecutar (la validación normativa no se repite)
+        var again = document.createElement('button');
+        again.type = 'button';
+        again.className = 'btn btn-sm';
+        again.textContent = (kind === KINDS.duplicity || kind === KINDS.fidelity) ? 'Volver a comprobar' : 'Volver a analizar';
+        again.addEventListener('click', function () { runReport(btn); });
+        var foot = document.createElement('div');
+        foot.className = 'report-footer';
+        foot.appendChild(again);
+        nodes.push(foot);
+      }
+      insertRow(btn, nodes);
+    }
+
+    function showError(btn, message) {
+      var box = document.createElement('div');
+      box.className = 'alert-danger';
+      var body = document.createElement('div');
+      body.className = 'md';
+      var p = document.createElement('p');
+      p.textContent = message;
+      body.appendChild(p);
+      box.appendChild(body);
+      insertRow(btn, [box]);
+    }
+
+    function setDone(btn, done) {
+      btn.dataset.done = done ? 'true' : 'false';
+      btn.textContent = done ? (kindOf(btn).doneLabel || 'Ver informe') : kindOf(btn).label;
+    }
+
+    function runReport(btn) {
+      var kind = kindOf(btn);
+      var wasDone = btn.dataset.done === 'true';
+      var old = existingRow(btn);
+      if (old) old.remove();
+      btn.disabled = true;
+      btn.classList.add('loading');
+      btn.textContent = 'Cargando…';
+
+      function fail(message) {
+        setDone(btn, wasDone);
+        showError(btn, message);
+      }
+
+      fetch(btn.dataset.url, { method: 'POST', headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Respuesta no válida del servidor.' }; }); })
+        .then(function (data) {
+          if (data.ok) {
+            btn.dataset.result = data[kind.key];
+            setDone(btn, true);
+            showReport(btn);
+          } else {
+            fail(data.error || 'No se pudo completar la operación.');
+          }
+        })
+        .catch(function () { fail('Error de red: no se pudo contactar con el servidor.'); })
+        .then(function () { btn.disabled = false; btn.classList.remove('loading'); });
+    }
+
+    document.querySelectorAll('.js-analyze, .js-normative, .js-duplicity, .js-fidelity').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (btn.dataset.done !== 'true') { runReport(btn); return; }
+        var row = existingRow(btn);
+        if (row) row.remove(); else showReport(btn); // toggle
+      });
+    });
+  })();
+
+  // Columnas redimensionables con persistencia en localStorage (Vanilla JS).
+  document.addEventListener('DOMContentLoaded', function () {
+    var STORAGE_KEY = 'bcac.dashboard.colWidths';
+    var MIN_WIDTH = 120; // coincide con el min-width de th/td en CSS
+    var DEFAULTS = [300, 200, 200, 180, 120, 120, 120, 240, 320]; // px por columna
+    var tables = document.querySelectorAll('.table-wrap table');
+    var widths = DEFAULTS.slice();
+
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}');
+      Object.keys(saved).forEach(function (i) {
+        var w = Number(saved[i]);
+        if (i < widths.length && w >= MIN_WIDTH) widths[i] = w;
+      });
+    } catch (e) { /* localStorage no disponible o JSON inválido: se usan los valores por defecto */ }
+
+    function applyWidths() {
+      var total = widths.reduce(function (a, b) { return a + b; }, 0);
+      tables.forEach(function (table) {
+        table.querySelectorAll('col').forEach(function (col, i) { col.style.width = widths[i] + 'px'; });
+        table.style.width = total + 'px';
+      });
+    }
+
+    function save() {
+      try {
+        var out = {};
+        widths.forEach(function (w, i) { out[i] = Math.round(w); });
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
+      } catch (e) { /* ignorar */ }
+    }
+
+    tables.forEach(function (table) {
+      var colgroup = document.createElement('colgroup');
+      table.querySelectorAll('thead th').forEach(function (th, i) {
+        th.dataset.colIndex = i;
+        colgroup.appendChild(document.createElement('col'));
+
+        var handle = document.createElement('span');
+        handle.className = 'col-resizer';
+        handle.setAttribute('aria-hidden', 'true');
+        th.appendChild(handle);
+
+        handle.addEventListener('pointerdown', function (ev) {
+          ev.preventDefault();
+          handle.setPointerCapture(ev.pointerId);
+          var startX = ev.clientX, startW = widths[i];
+          handle.classList.add('dragging');
+          document.body.classList.add('col-resizing');
+
+          function move(e) {
+            widths[i] = Math.max(MIN_WIDTH, startW + e.clientX - startX);
+            applyWidths();
+          }
+          function end() {
+            handle.removeEventListener('pointermove', move);
+            handle.removeEventListener('pointerup', end);
+            handle.removeEventListener('pointercancel', end);
+            handle.classList.remove('dragging');
+            document.body.classList.remove('col-resizing');
+            save();
+          }
+          handle.addEventListener('pointermove', move);
+          handle.addEventListener('pointerup', end);
+          handle.addEventListener('pointercancel', end);
+        });
+      });
+      table.insertBefore(colgroup, table.firstChild);
+    });
+
+    applyWidths();
+  });
+</script>
+{% endblock %}

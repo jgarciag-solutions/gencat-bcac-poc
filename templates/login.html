@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Iniciar sesión{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <section class="card login-card">
+    <div class="card-body">
+      <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Gencat" class="login-logo">
+      <h1>BCAC</h1>
+      <p class="subtitle">Base de Conocimiento · Acceso a la POC</p>
+      <form method="post" action="{{ url_for('login') }}">
+        <div class="field">
+          <label for="username">Usuario</label>
+          <input id="username" name="username" type="text" required autofocus autocomplete="username" placeholder="admin">
+        </div>
+        <div class="field">
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Entrar</button>
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}

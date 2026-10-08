@@ -1,0 +1,7 @@
+{
+  "chunk_size": 1000,
+  "chunk_overlap": 100,
+  "embedding_model": "gemini-embedding-001",
+  "simhash_max_distance": 3,
+  "vector_similarity_threshold": 0.95
+}
