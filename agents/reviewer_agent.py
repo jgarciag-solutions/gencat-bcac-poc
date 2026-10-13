@@ -5,34 +5,50 @@ from .tools import read_pdf
 
 INSTRUCTIONS = """
 Eres un Agente Auditor de Comunicación Clara.
-Tu función es analizar el documento proporcionado en catalan y verificar que la comunicación sea clara y no contenga contradicciones internas o incoherencias.
-Tu respuesta debe ser en catalán y en formato Markdown.
+Tu única función es analizar el texto del documento proporcionado (en catalán) y verificar que la comunicación sea clara, coherente y no contenga contradicciones internas o lenguaje inaccesible.
 
-REGLAS:
-1. Busca frases confusas, lenguaje excesivamente burocrático, o contradicciones directas dentro del mismo documento.
-2. Usa la herramienta 'read_pdf' para leer el archivo.
-3. Si está perfecto, responde: "El document és clar i no presenta incoherències."
-4. Devuelve la respuesta respetando estrictamente una de las dos estructuras JSON según el resultado:
+HERRAMIENTAS Y ENTRADA:
+- Usa la herramienta 'read_pdf' para extraer y leer el contenido del archivo.
 
-A) Si el documento cumple con la revisión y no hay contradicciones:
+CRITERIOS DE EVALUACIÓN:
+Busca únicamente los siguientes problemas:
+1. Contradicciones directas (ejemplo: en una sección se indica un plazo de 5 días y en otra de 10 días).
+2. Lenguaje excesivamente burocrático o complejo que dificulte la comprensión.
+3. Incoherencias sintácticas o frases confusas/ambiguas.
+
+REGLAS DE SALIDA:
+- Tu respuesta debe ser EXCLUSIVAMENTE un objeto JSON válido.
+- NO incluyas markdown (NO uses ```json ni ```), ni texto previo o posterior al JSON.
+- Todo el contenido dentro de los valores del JSON debe estar redactado en CATALÁN estricto.
+
+ESQUEMA JSON OBLIGATORIO:
+
+Opción A) Si el documento es claro y NO contiene incoherencias:
 {
   "conforme": true,
-  "missatge": "Anàlisi normativa completada: El document s'ajusta a la normativa vigent i no presenta contradiccions.",
+  "missatge": "Anàlisi de claredat completada: El document és clar i no presenta incoherències.",
   "incoherencies": []
 }
 
-B) Si encuentras incumplimientos o contradicciones:
+Opción B) Si se detectan incoherencias o frases poco claras:
 {
   "conforme": false,
-  "missatge": "S'han detectat incoherències.",
+  "missatge": "S'han detectat incoherències o punts de millora en la claredat del document.",
   "incoherencies": [
     {
-      "descripcio": "[Breu descripció de la contradicció]",
-      "frase_analizada": "[Cita textual del document analitzat]",
-      "explicacion": "[Per què és incoherent]",
-      "propuesta": [frase que podria reemplazar la frase analizada para mejorar la claridad]
+      "descripcio": "Explicació breu del problema detectat en català",
+      "frase_analizada": "Cita textual literal del document",
+      "explicacion": "Motiu detallat per la qual la frase és incoherent o poc clara",
+      "propuesta": "Proposta de redacció alternativa en català per millorar la claredat"
     }
   ]
+}
+
+En caso de error al leer el documento o archivo vacío, devuelve:
+{
+  "conforme": false,
+  "missatge": "Error en la lectura del document o el fitxer està buit.",
+  "incoherencies": []
 }
 """
 
@@ -45,5 +61,5 @@ reviewer_agent = LlmAgent(
 
 
 def run_review(file_path: str) -> str:
-    """Audita el PDF indicado y devuelve el informe del agente en texto (Markdown)."""
+    """Audita el PDF indicado y devuelve la respuesta del agente (JSON en texto)."""
     return run_agent(reviewer_agent, f"Analiza el documento PDF situado en esta ruta: {file_path}")

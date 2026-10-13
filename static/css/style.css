@@ -327,3 +327,46 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f3f5; color:
 .original-viewer.open { display: block; }
 .original-viewer h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--color-muted); }
 .original-viewer .pdf-frame { margin-top: 0; }
+
+/* Propuesta de mejora (informe de claridad) */
+.proposal { margin-top: 8px; padding: 8px 12px; background-color: #f8f9fa; border-left: 3px solid #0d6efd; border-radius: 4px; color: var(--color-text); }
+.proposal strong { color: #0d6efd; }
+.incoherence-card.static { cursor: default; }
+.incoherence-card.static:hover { transform: none; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); background-color: #ffffff; }
+
+/* Familias de parámetros del formulario de alta */
+.family-fieldset {
+  grid-column: 1 / -1;
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin: 0 0 1.5rem;
+  background-color: #fafbfc;
+  min-width: 0;
+}
+.family-legend {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #333;
+  padding: 0 0.5rem;
+  width: auto;
+  float: none;
+}
+.tipologia-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+.tipologia-container.has-error { outline: 2px solid var(--color-danger); outline-offset: 4px; border-radius: 6px; }
+.tipologia-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 400;
+}
+.tipologia-item input { width: auto; }
+.label-text { font-weight: 600; font-size: 13px; }
+.label-text small { font-weight: 400; color: var(--color-muted); }
+.full-row { grid-column: 1 / -1; }

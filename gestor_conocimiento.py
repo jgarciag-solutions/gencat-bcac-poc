@@ -38,7 +38,7 @@ def compute_centroid(vectors_list):
 
 def _sources(doc: dict) -> list:
     """Fuentes de un documento (`source` o `fuente_original`) siempre como lista."""
-    src = doc.get("source") or doc.get("fuente_original") or []
+    src = doc.get("unidades_base_origen") or doc.get("source") or doc.get("fuente_original") or []
     return src if isinstance(src, list) else [src]
 
 

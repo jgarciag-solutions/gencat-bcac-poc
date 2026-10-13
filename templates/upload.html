@@ -17,20 +17,100 @@
           <input id="file" name="file" type="file" required accept="{% for e in extensions %}.{{ e }}{% if not loop.last %},{% endif %}{% endfor %}">
           <span class="hint">Formatos: {{ extensions | join(', ') }}. Máximo 16 MB.</span>
         </div>
-        <div class="field full">
-          <label for="title">Título</label>
-          <input id="title" name="title" type="text" required value="{{ form.get('title', '') }}">
-        </div>
-        <div class="field full">
-          <label for="content_type">Tipo de contenido</label>
-          <select id="content_type" name="content_type" required>
-            <option value="" disabled {{ 'selected' if not form.get('content_type') }}>Selecciona…</option>
-            {% for ct in content_types %}
-            <option value="{{ ct }}" {{ 'selected' if form.get('content_type') == ct }}>{{ ct }}</option>
-            {% endfor %}
-          </select>
-          <span class="hint">Base: Elaboración → Unidad Finalista → Gestor del Conocimiento → Publicada. Adaptado: Elaboración → Responsable de Canal → Publicada.</span>
-        </div>
+        <fieldset class="family-fieldset">
+          <legend class="family-legend">Identificación</legend>
+          <div class="form-grid">
+            <div class="field full">
+              <label for="titulo">Título</label>
+              <input type="text" name="titulo" id="titulo" required value="{{ form.get('title', '') }}">
+            </div>
+            <div class="field">
+              <label for="tipo_contenido">Tipo de contenido</label>
+              <select name="tipo_contenido" id="tipo_contenido" required>
+                <option value="" disabled {{ 'selected' if not form.get('content_type') }}>Selecciona…</option>
+                {% for ct in content_types %}
+                <option value="{{ ct }}" {{ 'selected' if form.get('content_type') == ct }}>{{ ct }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field">
+              <label for="idioma">Idioma</label>
+              <select name="idioma" id="idioma" required>
+                <option value="" disabled {{ 'selected' if not form.get('idioma') }}>Selecciona…</option>
+                {% for i in idiomas %}
+                <option value="{{ i }}" {{ 'selected' if form.get('idioma') == i }}>{{ i }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field full">
+              <span class="label-text">Tipología <small>(selecciona al menos una)</small></span>
+              <div class="tipologia-container" id="tipologia-container">
+                {% for name in tipologias %}
+                <label class="tipologia-item">
+                  <input type="checkbox" name="tipologia" value="{{ name }}" {{ 'checked' if name in selected_tipologia }}>
+                  {{ name }}
+                </label>
+                {% endfor %}
+              </div>
+              <span class="field-error" id="tipologia-error" role="alert" hidden>Debes seleccionar al menos una opción en la Tipología.</span>
+            </div>
+            
+          </div>
+        </fieldset>
+        <fieldset class="family-fieldset">
+          <legend class="family-legend">Origen y Trazabilidad</legend>
+          <div class="form-grid">
+            <div class="field full" id="container_departamento" hidden>
+              <span class="label-text">Departamento competente <small>(solo Base; selecciona al menos uno)</small></span>
+              <div class="tipologia-container" id="departamento-checks">
+                {% for dep in departments %}
+                <label class="tipologia-item">
+                  <input type="checkbox" name="departamentos_competentes" value="{{ dep }}" {{ 'checked' if dep in selected_departments }}>
+                  {{ dep }}
+                </label>
+                {% endfor %}
+              </div>
+              <span class="field-error" id="departamento-error" role="alert" hidden>Debes seleccionar al menos un departamento competente.</span>
+            </div>
+            <div class="field full" id="container_unidad_base" hidden>
+              <label for="unidades_base_origen">Unidad base origen <small>(solo Adaptado; documentos base publicados)</small></label>
+              <select id="unidades_base_origen" name="unidades_base_origen" multiple size="{{ [base_docs | length, 3] | max if base_docs else 3 }}" disabled>
+                {% for d in base_docs %}
+                <option value="{{ d.id }}" data-taxonomy='{{ d.taxonomy | tojson }}'
+                        {{ 'selected' if d.id in selected_sources }}>{{ d.title }} (v{{ d.version }})</option>
+                {% endfor %}
+              </select>
+              <span class="hint">Mantén ⌘ (Mac) o Ctrl pulsado para seleccionar varias.</span>
+              <span class="field-error" id="source-empty" role="alert" hidden>No hay documentos base publicados disponibles para adaptar</span>
+              <span class="field-error" id="unidad-error" role="alert" hidden>Debes seleccionar al menos una unidad base de origen.</span>
+            </div>
+            <div class="field" id="container_canal" hidden>
+              <label for="canal">Canal <small>(solo Adaptado)</small></label>
+              <select name="canal" id="canal" disabled>
+                <option value="">Selecciona un canal...</option>
+                {% for c in canales %}
+                <option value="{{ c }}" {{ 'selected' if form.get('canal') == c }}>{{ c }}</option>
+                {% endfor %}
+              </select>
+              <span class="field-error" id="canal-error" role="alert" hidden>Debes seleccionar un canal.</span>
+            </div>
+            <div class="field full" id="container_relacionados">
+              <span class="label-text">Contenidos relacionados <small>(opcional; documentos publicados)</small></span>
+              {% if published_docs %}
+              <div class="tipologia-container">
+                {% for d in published_docs %}
+                <label class="tipologia-item">
+                  <input type="checkbox" name="contenidos_relacionados" value="{{ d.id }}" {{ 'checked' if d.id in selected_related }}>
+                  {{ d.title }}
+                </label>
+                {% endfor %}
+              </div>
+              {% else %}
+              <em class="hint">No hay documentos publicados disponibles</em>
+              {% endif %}
+            </div>
+          </div>
+        </fieldset>
         <div class="field full" id="field-taxonomy" hidden>
           <label for="taxonomy">Taxonomía (N1 &gt; N2 &gt; N3)</label>
           <select id="taxonomy" name="taxonomy" required disabled>
@@ -40,30 +120,10 @@
             {% endfor %}
           </select>
         </div>
-        <div class="field full" id="field-source" hidden>
-          <label for="source">Fuente original (documentos base publicados)</label>
-          <select id="source" name="source" multiple size="{{ [base_docs | length, 3] | max if base_docs else 3 }}" disabled>
-            {% for d in base_docs %}
-            <option value="{{ d.id }}" data-taxonomy='{{ d.taxonomy | tojson }}'
-                    {{ 'selected' if d.id in selected_sources }}>{{ d.title }} (v{{ d.version }})</option>
-            {% endfor %}
-          </select>
-          <span class="hint">Mantén ⌘ (Mac) o Ctrl pulsado para seleccionar varios.</span>
-          <span class="field-error" id="source-empty" role="alert" hidden>No hay documentos base publicados disponibles para adaptar</span>
-        </div>
         <div class="field full" id="field-inherited" hidden>
           <label for="inherited-taxonomy">Taxonomía heredada</label>
           <textarea id="inherited-taxonomy" class="readonly" rows="2" readonly placeholder="Se completará al seleccionar las fuentes originales"></textarea>
           <span class="hint">Unión (sin duplicados) de las taxonomías de las fuentes seleccionadas. No es editable.</span>
-        </div>
-        <div class="field">
-          <label for="department">Departamento responsable</label>
-          <select id="department" name="department" required>
-            <option value="" disabled {{ 'selected' if not form.get('department') }}>Selecciona…</option>
-            {% for dep in departments %}
-            <option value="{{ dep }}" {{ 'selected' if form.get('department') == dep }}>{{ dep }}</option>
-            {% endfor %}
-          </select>
         </div>
         <div class="field">
           <label for="date">Fecha</label>
@@ -80,15 +140,26 @@
 
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    var type = document.getElementById('content_type');
+    var form = document.querySelector('form');
+    var type = document.getElementById('tipo_contenido');
     var taxGroup = document.getElementById('field-taxonomy');
     var tax = document.getElementById('taxonomy');
-    var srcGroup = document.getElementById('field-source');
-    var src = document.getElementById('source');
+    var depGroup = document.getElementById('container_departamento');
+    var depChecks = document.querySelectorAll('input[name="departamentos_competentes"]');
+    var srcGroup = document.getElementById('container_unidad_base');
+    var src = document.getElementById('unidades_base_origen');
     var srcEmpty = document.getElementById('source-empty');
+    var canalGroup = document.getElementById('container_canal');
+    var canal = document.getElementById('canal');
     var inhGroup = document.getElementById('field-inherited');
     var inherited = document.getElementById('inherited-taxonomy');
-    var submit = document.querySelector('form button[type="submit"]');
+    var submit = form.querySelector('button[type="submit"]');
+
+    function show(group, visible) { group.hidden = !visible; }
+    function setError(id, on, container) {
+      document.getElementById(id).hidden = !on;
+      if (container) container.classList.toggle('has-error', on);
+    }
 
     // Unión sin duplicados de data-taxonomy (array JSON) de las opciones seleccionadas.
     function updateInherited() {
@@ -100,16 +171,24 @@
       inherited.value = all.join('\n');
     }
 
+    // Visibilidad según el tipo de contenido: un campo oculto se deshabilita (ni se envía ni se valida).
     function update() {
       var base = type.value === 'Base';
       var adapted = type.value === 'Adaptado';
 
-      taxGroup.hidden = !base;
-      tax.disabled = !base;               // un campo disabled no se envía ni se valida
+      show(taxGroup, base);
+      tax.disabled = !base;
 
-      srcGroup.hidden = inhGroup.hidden = !adapted;
+      show(depGroup, base);               // Base: al menos una casilla (se valida en el submit)
+      depChecks.forEach(function (c) { c.disabled = !base; });
+
+      show(srcGroup, adapted);            // Adaptado: unidad base y canal obligatorios
       src.disabled = !adapted;
       src.required = adapted && src.options.length > 0;
+      show(canalGroup, adapted);
+      canal.disabled = !adapted;
+      canal.required = adapted;
+      show(inhGroup, adapted);
 
       var noSources = adapted && src.options.length === 0;
       srcEmpty.hidden = !noSources;
@@ -117,11 +196,40 @@
       submit.disabled = noSources;        // sin bases publicadas no se puede adaptar nada
 
       if (adapted) updateInherited();
+      setError('departamento-error', false, depGroup);
+      setError('unidad-error', false);
+      setError('canal-error', false);
     }
 
+    // Validación del envío (el resto de obligatorios los valida el navegador con required).
+    form.addEventListener('submit', function (event) {
+      var problems = [];
+      if (document.querySelectorAll('input[name="tipologia"]:checked').length === 0) {
+        setError('tipologia-error', true, document.getElementById('tipologia-container'));
+        problems.push('tipologia');
+      }
+      if (type.value === 'Base' &&
+          document.querySelectorAll('input[name="departamentos_competentes"]:checked').length === 0) {
+        setError('departamento-error', true, document.getElementById('departamento-checks'));
+        problems.push('departamento');
+      }
+      if (type.value === 'Adaptado') {
+        if (src.selectedOptions.length === 0) { setError('unidad-error', true); problems.push('unidad'); }
+        if (!canal.value) { setError('canal-error', true); problems.push('canal'); }
+      }
+      if (problems.length) { event.preventDefault(); return false; }
+    });
+    document.querySelectorAll('input[name="tipologia"]').forEach(function (c) {
+      c.addEventListener('change', function () { setError('tipologia-error', false, document.getElementById('tipologia-container')); });
+    });
+    depChecks.forEach(function (c) {
+      c.addEventListener('change', function () { setError('departamento-error', false, document.getElementById('departamento-checks')); });
+    });
+    src.addEventListener('change', function () { updateInherited(); setError('unidad-error', false); });
+    canal.addEventListener('change', function () { setError('canal-error', false); });
+
     type.addEventListener('change', update);
-    src.addEventListener('change', updateInherited);
-    update();
+    update();   // estado inicial (también al volver con errores de validación del servidor)
   });
 </script>
 {% endblock %}

@@ -13,7 +13,7 @@ from flask import (Flask, abort, flash, jsonify, redirect, render_template, requ
 from werkzeug.utils import secure_filename
 
 import gestor_conocimiento
-from pdf_annotator import annotate_pdf_with_ai_results
+from pdf_annotator import annotate_pdf_with_ai_results, annotate_referente_pdf
 from pipeline import process_document
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -93,12 +93,40 @@ TAXONOMY = {
     },
 }
 
+IDIOMAS = ["Catalán", "Español"]
+TIPOLOGIAS = [
+    "Descripción del trámite o servicio",
+    "Manual de tramitación",
+    "Guia de la atencion",
+    "Respuesta tipo",
+    "Aviso",
+    "Datos de apoyo",
+    "Fuente externa referenciada",
+]
+
+CANALES = ["WEB", "Redes", "Presencial", "012"]
+
 DEPARTMENTS = [
     "Derechos Sociales y Familias",
     "Economía y Hacienda",
     "Territorio y Vivienda",
     "Atención Ciudadana",
 ]
+
+CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+
+
+def departamentos_competentes():
+    """Lista cerrada de departamentos (config.json); se relee en cada petición para reflejar cambios."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as fh:
+            items = json.load(fh).get("departamentos_competentes")
+        if isinstance(items, list) and all(isinstance(i, str) for i in items) and items:
+            return items
+    except (OSError, ValueError):
+        app.logger.warning("No se pudo leer departamentos_competentes de config.json; se usa la lista por defecto.")
+    return list(DEPARTMENTS)
+
 
 # --------------------------------------------------------------------------
 # Persistencia en uploads/documents.json
@@ -125,10 +153,20 @@ def normalize(doc):
     tax = doc.get("taxonomy")
     doc["taxonomy"] = [tax] if isinstance(tax, str) and tax else (tax if isinstance(tax, list) else [])
     doc.setdefault("content_type", "Base")
+    doc.setdefault("idioma", None)
+    doc.setdefault("tipologia", [])
+    # Origen y trazabilidad (en la raíz del registro). Se migran los campos antiguos `source` y `department`.
+    legacy_source = doc.pop("source", None)
+    doc.setdefault("unidades_base_origen", legacy_source if isinstance(legacy_source, list) else [])
+    legacy_dep = doc.get("department")
+    doc.setdefault("departamentos_competentes", [legacy_dep] if isinstance(legacy_dep, str) and legacy_dep else [])
+    doc.setdefault("canal", "")
+    doc.setdefault("contenidos_relacionados", [])
     doc.setdefault("version", 1)
     doc.setdefault("observations", "")
     doc.setdefault("analysis_result", None)
     doc.setdefault("analysis_done", False)
+    doc.setdefault("referente_analysis_result", None)
     doc.setdefault("normative_analysis_result", None)
     doc.setdefault("normative_analysis_done", False)
     doc.setdefault("simhash", None)
@@ -223,7 +261,7 @@ def published_base_docs(docs):
 
 def source_titles(doc, titles):
     """Fuente original legible: títulos de los documentos origen (o texto libre en registros antiguos)."""
-    src = doc.get("source")
+    src = doc.get("unidades_base_origen")
     if isinstance(src, list):
         return [titles.get(i, i) for i in src]
     return [src] if src else []
@@ -294,7 +332,8 @@ def logout():
 def dashboard():
     docs = load_documents()
     titles = {d["id"]: d["title"] for d in docs}
-    rows = [{**d, "source_titles": source_titles(d, titles), "can_advance": can_advance(d),
+    rows = [{**d, "department": ", ".join(d["departamentos_competentes"]) or d.get("department", ""),
+             "source_titles": source_titles(d, titles), "can_advance": can_advance(d),
              "action": ACTION_LABEL.get(d["status"], ""),
              "badge": STATES.index(d["status"]) + 1 if d["status"] in STATES else 0}
             for d in docs]
@@ -303,10 +342,14 @@ def dashboard():
     return render_template("dashboard.html", tabs=tabs, validation_states=VALIDATION_STATES)
 
 
-def render_upload(form, selected_sources=()):
+def render_upload(form, selected_sources=(), selected_tipologia=(), selected_departments=(), selected_related=()):
+    docs = load_documents()
     return render_template("upload.html", form=form, taxonomies=taxonomy_paths(),
-                           departments=DEPARTMENTS, content_types=CONTENT_TYPES,
-                           base_docs=published_base_docs(load_documents()),
+                           departments=departamentos_competentes(), content_types=CONTENT_TYPES,
+                           canales=CANALES, published_docs=[d for d in docs if d["status"] == S_PUB],
+                           selected_departments=list(selected_departments), selected_related=list(selected_related),
+                           idiomas=IDIOMAS, tipologias=TIPOLOGIAS, selected_tipologia=list(selected_tipologia),
+                           base_docs=published_base_docs(docs),
                            selected_sources=list(selected_sources),
                            today=date.today().isoformat(), extensions=sorted(ALLOWED_EXTENSIONS))
 
@@ -317,49 +360,87 @@ def upload():
     user = current_user()
     form = {}
     selected_sources = []
+    selected_tipologia = []
+    selected_departments, selected_related = [], []
     if request.method == "POST":
-        form = {k: request.form.get(k, "").strip()
-                for k in ("title", "taxonomy", "department", "date", "content_type")}
-        selected_sources = list(dict.fromkeys(request.form.getlist("source")))  # sin duplicados
+        form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "date", "idioma", "canal")}
+        # Familia «Identificación»: todos sus campos son obligatorios.
+        form["title"] = request.form.get("titulo", "").strip()
+        form["content_type"] = request.form.get("tipo_contenido", "").strip()
+        selected_tipologia = list(dict.fromkeys(request.form.getlist("tipologia")))
+        # Familia «Origen y trazabilidad» (listas sin duplicados)
+        selected_departments = list(dict.fromkeys(request.form.getlist("departamentos_competentes")))
+        selected_sources = list(dict.fromkeys(request.form.getlist("unidades_base_origen")))
+        selected_related = list(dict.fromkeys(request.form.getlist("contenidos_relacionados")))
         file = request.files.get("file")
         errors = []
+        if not form["title"]:
+            errors.append("Falta el campo obligatorio «Título».")
+        if not form["content_type"]:
+            errors.append("Falta el campo obligatorio «Tipo de contenido».")
+        if not form["idioma"]:
+            errors.append("Falta el campo obligatorio «Idioma».")
+        elif form["idioma"] not in IDIOMAS:
+            errors.append("El idioma debe ser «Catalán» o «Español».")
+        if not selected_tipologia:
+            errors.append("Falta el campo obligatorio «Tipología»: selecciona al menos una opción.")
+        elif any(t not in TIPOLOGIAS for t in selected_tipologia):
+            errors.append("Alguna opción de Tipología no es válida.")
         if not file or not file.filename:
             errors.append("Debes seleccionar un archivo.")
         elif not allowed_file(file.filename):
             errors.append("Tipo de archivo no permitido. Formatos válidos: "
                           + ", ".join(sorted(ALLOWED_EXTENSIONS)) + ".")
-        if not all(form[k] for k in ("title", "department", "date", "content_type")):
-            errors.append("Todos los campos de metadatos son obligatorios.")
+        if not form["date"]:
+            errors.append("Falta el campo obligatorio «Fecha».")
         if form["content_type"] and form["content_type"] not in CONTENT_TYPES:
             errors.append("El tipo de contenido no es válido.")
-        if form["department"] and form["department"] not in DEPARTMENTS:
-            errors.append("El departamento seleccionado no es válido.")
         if form["date"]:
             try:
                 date.fromisoformat(form["date"])
             except ValueError:
                 errors.append("La fecha no es válida.")
 
-        # Reglas de herencia según el tipo de contenido.
-        taxonomy, source = [], []
+        # Reglas por tipo de contenido (los campos que no aplican al tipo se ignoran).
+        taxonomy, source, departments, canal = [], [], [], ""
+        valid_departments = departamentos_competentes()
         if form["content_type"] == "Base":
+            if not selected_departments:
+                errors.append("Falta el campo obligatorio «Departamento competente»: selecciona al menos uno.")
+            elif any(dep not in valid_departments for dep in selected_departments):
+                errors.append("Algún departamento competente no es válido.")
+            else:
+                departments = selected_departments
             if form["taxonomy"] not in taxonomy_paths():
                 errors.append("Selecciona una taxonomía válida.")
             taxonomy = [form["taxonomy"]]  # lista de un elemento; la fuente original no aplica
         elif form["content_type"] == "Adaptado":
-            # Se ignora cualquier taxonomía manual: se hereda de las fuentes seleccionadas.
+            # Se ignora cualquier taxonomía manual: se hereda de las unidades base seleccionadas.
             available = {d["id"]: d for d in published_base_docs(load_documents())}
             if not selected_sources:
-                errors.append("Selecciona al menos un documento base publicado como fuente original.")
+                errors.append("Falta el campo obligatorio «Unidad base de origen»: selecciona al menos un documento base publicado.")
             elif any(i not in available for i in selected_sources):
-                errors.append("Alguna fuente original no es un documento base publicado.")
+                errors.append("Alguna unidad base de origen no es un documento base publicado.")
             else:
                 source = selected_sources
                 taxonomy = list(dict.fromkeys(t for i in source for t in available[i]["taxonomy"]))
+            if not form["canal"]:
+                errors.append("Falta el campo obligatorio «Canal».")
+            elif form["canal"] not in CANALES:
+                errors.append("El canal seleccionado no es válido.")
+            else:
+                canal = form["canal"]
+
+        # Contenidos relacionados (todos los tipos): solo documentos publicados.
+        if selected_related:
+            published_ids = {d["id"] for d in load_documents() if d["status"] == S_PUB}
+            if any(i not in published_ids for i in selected_related):
+                errors.append("Algún contenido relacionado no es un documento publicado.")
 
         if errors:
             for e in errors:
                 flash(e, "error")
+            return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related), 400
         else:
             filename = secure_filename(file.filename)
             if not filename:
@@ -380,15 +461,20 @@ def upload():
                         "id": doc_id,
                         "filename": filename,
                         "title": form["title"],
+                        "idioma": form["idioma"],
+                        "tipologia": selected_tipologia,
                         "taxonomy": taxonomy,
-                        "source": source,
-                        "department": form["department"],
+                        "departamentos_competentes": departments,
+                        "unidades_base_origen": source,
+                        "canal": canal,
+                        "contenidos_relacionados": selected_related,
                         "date": form["date"],
                         "content_type": form["content_type"],
                         "version": 1,
                         "observations": "",
                         "analysis_result": None,
                         "analysis_done": False,
+                        "referente_analysis_result": None,
                         "normative_analysis_result": None,
                         "normative_analysis_done": False,
                         "simhash": simhash,
@@ -410,7 +496,7 @@ def upload():
                         if vector_file:
                             os.remove(os.path.join(BASE_DIR, vector_file))
                         flash("No se pudo guardar el documento. Inténtalo de nuevo.", "error")
-                        return render_upload(form, selected_sources)
+                        return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related)
                     if vector_file:
                         flash("Documento subido. El documento queda «En elaboración».", "success")
                     else:
@@ -418,7 +504,7 @@ def upload():
                               "(revisa la API key o la cuota de Gemini).", "warning")
                     return redirect(url_for("dashboard"))
 
-    return render_upload(form, selected_sources)
+    return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related)
 
 
 def change_document(doc_id, action):
@@ -528,20 +614,22 @@ def api_analyze(doc_id):
 
     try:
         from agents.reviewer_agent import run_review  # import diferido: la app arranca sin la IA
-        result = run_review(path)
+        result = clean_and_parse_json(run_review(path))
     except Exception as exc:
         app.logger.exception("Fallo en el análisis IA de %s", doc_id)
         return jsonify(ok=False, error=f"No se pudo completar el análisis: {exc}"), 502
+    if result.get("error"):  # respuesta no parseable: no se guarda como completada
+        return jsonify(ok=False, error=result["mensaje"]), 502
 
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante la llamada al modelo
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
             return jsonify(ok=False, error="El documento ya no existe."), 404
-        doc["analysis_result"] = result
+        doc["referente_analysis_result"] = result
         doc["analysis_done"] = True
         save_documents(docs)
-    return jsonify(ok=True, analysis_result=result)
+    return jsonify(ok=True, referente_analysis_result=result)
 
 
 @app.route("/api/validate_normative/<doc_id>", methods=["POST"])
@@ -637,7 +725,7 @@ def api_check_fidelity(doc_id):
     if not os.path.isfile(adapted_path):
         return jsonify(ok=False, error="Archivo físico no disponible"), 404
 
-    sources = doc.get("source") if isinstance(doc.get("source"), list) else []
+    sources = doc.get("unidades_base_origen") if isinstance(doc.get("unidades_base_origen"), list) else []
     if not sources:
         return jsonify(ok=False, error="Este documento no tiene documentos fuente asociados; "
                                        "no hay nada con lo que comprobar su fidelidad."), 409
@@ -678,7 +766,7 @@ def api_check_fidelity(doc_id):
     return jsonify(ok=True, fidelity_analysis_result=result)
 
 
-ANNOTATED_RE = re.compile(r"[0-9a-f]{8}_annotated\.pdf")
+ANNOTATED_RE = re.compile(r"[0-9a-f]{8}(_referente)?_annotated\.pdf")
 
 
 def incoherencias_of(result):
@@ -698,11 +786,14 @@ def api_generate_annotated_pdf(doc_id):
     if doc is None:
         return jsonify(ok=False, error="Documento no encontrado."), 404
 
-    results = {"normative": doc.get("normative_analysis_result"), "fidelity": doc.get("fidelity_analysis_result")}
+    results = {"normative": doc.get("normative_analysis_result"), "fidelity": doc.get("fidelity_analysis_result"),
+               "referente": doc.get("referente_analysis_result")}
+    result_fields = {"normative": "normative_analysis_result", "fidelity": "fidelity_analysis_result",
+                     "referente": "referente_analysis_result"}
     kind = request.form.get("kind")
     if kind not in results:  # sin indicar: el análisis disponible (el de su fase tiene prioridad)
-        order = ["fidelity", "normative"] if doc["status"] == S_RC else ["normative", "fidelity"]
-        kind = next((k for k in order if results[k]), None)
+        order = {S_RC: ["fidelity", "normative", "referente"], S_ELAB: ["referente", "normative", "fidelity"]}
+        kind = next((k for k in order.get(doc["status"], ["normative", "fidelity", "referente"]) if results[k]), None)
     if not kind or not results[kind]:
         return jsonify(ok=False, error="El documento no tiene un análisis de IA previo."), 400
     incoherencias = incoherencias_of(results[kind])
@@ -716,9 +807,11 @@ def api_generate_annotated_pdf(doc_id):
     if not os.path.isfile(original):
         return jsonify(ok=False, error="Archivo físico no disponible"), 404
 
-    annotated_name = f"{doc_id}_annotated.pdf"
+    # El informe de claridad (Referente) tiene su propio PDF y su propio formato de recuadro.
+    annotated_name = f"{doc_id}_referente_annotated.pdf" if kind == "referente" else f"{doc_id}_annotated.pdf"
     annotated = os.path.join(app.config["UPLOAD_FOLDER"], annotated_name)
-    saved, enriched = annotate_pdf_with_ai_results(original, annotated, incoherencias)
+    annotator = annotate_referente_pdf if kind == "referente" else annotate_pdf_with_ai_results
+    saved, enriched = annotator(original, annotated, incoherencias)
     if not saved:
         return jsonify(ok=False, error="No se pudo localizar ninguna de las frases analizadas en el PDF "
                                        "(¿es un documento escaneado o el texto difiere?)."), 422
@@ -732,7 +825,7 @@ def api_generate_annotated_pdf(doc_id):
         docs = load_documents()
         stored = find_doc(docs, doc_id)
         if stored is not None:
-            field = "normative_analysis_result" if kind == "normative" else "fidelity_analysis_result"
+            field = result_fields[kind]
             for item, page_number in zip(incoherencias_of(stored.get(field)), pages):
                 item["page_number"] = page_number
             save_documents(docs)

@@ -65,9 +65,9 @@ def _widen_margin(page) -> float:
     return page.rect.width - BOX_WIDTH - GUTTER
 
 
-def annotate_pdf_with_ai_results(original_pdf_path: str, output_pdf_path: str,
-                                 incoherencias_list: list) -> tuple:
-    """Resalta cada `frase_analizada` y coloca su explicación completa en un recuadro al margen.
+def _annotate_with_margin_boxes(original_pdf_path: str, output_pdf_path: str,
+                                incoherencias_list: list, build_text) -> tuple:
+    """Resalta cada `frase_analizada` y coloca un recuadro al margen con `build_text(item)`.
 
     Devuelve (guardado, incoherencias_con_pagina): `guardado` es True si se escribió el PDF
     con al menos una anotación; cada hallazgo de la lista lleva `page_number` (1-indexado,
@@ -90,9 +90,7 @@ def annotate_pdf_with_ai_results(original_pdf_path: str, output_pdf_path: str,
             phrase = _normalize(item.get("frase_analizada"))
             if not phrase:
                 continue
-            infringed = item.get("texto_infrinjido") or item.get("normativa_infringida") or ""
-            explanation = item.get("explicacion") or ""
-            text = _latin1(f"FUENTES / NORMATIVA:\n{infringed}\n\nEXPLICACIÓN:\n{explanation}")
+            text = _latin1(build_text(item))
 
             for page in doc:
                 quads = page.search_for(phrase, quads=True)
@@ -112,7 +110,7 @@ def annotate_pdf_with_ai_results(original_pdf_path: str, output_pdf_path: str,
                 height = min(_wrapped_height(text, BOX_WIDTH - 2 * PAD), page.rect.height - 20)
                 top = min(top, page.rect.height - height - 10)  # sin salirse por abajo
                 rect = fitz.Rect(margin_x[page.number], top, margin_x[page.number] + BOX_WIDTH, top + height)
-                box = page.add_freetext_annot(
+                page.add_freetext_annot(
                     rect, text, fontsize=FONT_SIZE, fontname=FONT, text_color=BOX_TEXT,
                     fill_color=BOX_FILL, border_width=1,  # el borde toma el color del texto
                     callout=(fitz.Point(quads[0].rect.x1, quads[0].rect.y0 + 4),
@@ -134,3 +132,19 @@ def annotate_pdf_with_ai_results(original_pdf_path: str, output_pdf_path: str,
     finally:
         doc.close()
 
+
+def annotate_pdf_with_ai_results(original_pdf_path: str, output_pdf_path: str,
+                                 incoherencias_list: list) -> tuple:
+    """Auditorías normativa y de fidelidad: el recuadro lleva las fuentes y la explicación."""
+    def text(item):
+        infringed = item.get("texto_infrinjido") or item.get("normativa_infringida") or ""
+        return f"FUENTES / NORMATIVA:\n{infringed}\n\nEXPLICACIÓN:\n{item.get('explicacion') or ''}"
+    return _annotate_with_margin_boxes(original_pdf_path, output_pdf_path, incoherencias_list, text)
+
+
+def annotate_referente_pdf(original_pdf_path: str, output_pdf_path: str,
+                           incoherencias_list: list) -> tuple:
+    """Auditoría de claridad (Referente departamental): el recuadro lleva explicación y propuesta."""
+    def text(item):
+        return f"EXPLICACIÓN:\n{item.get('explicacion') or ''}\n\nPROPUESTA:\n{item.get('propuesta') or ''}"
+    return _annotate_with_margin_boxes(original_pdf_path, output_pdf_path, incoherencias_list, text)

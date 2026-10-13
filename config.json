@@ -3,5 +3,11 @@
   "chunk_overlap": 100,
   "embedding_model": "gemini-embedding-001",
   "simhash_max_distance": 3,
-  "vector_similarity_threshold": 0.95
+  "vector_similarity_threshold": 0.95,
+  "departamentos_competentes": [
+    "Derechos Sociales y Familias",
+    "Economía y Hacienda",
+    "Territorio y Vivienda",
+    "Atención Ciudadana"
+  ]
 }

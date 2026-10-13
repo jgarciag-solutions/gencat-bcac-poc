@@ -83,7 +83,7 @@
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.normative_analysis_done else 'false' }}"
                           data-result='{{ (d.normative_analysis_result | tojson) if d.normative_analysis_result else "" }}'
-                          data-clarity='{{ (d.analysis_result | tojson) if d.analysis_result else "" }}'>{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
+                          data-clarity='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
                   {% endif %}
                   {% if tab.status == 'En validación - Pte. Responsable Canal' %}
                   <button type="button" class="btn btn-sm js-fidelity"
@@ -102,7 +102,8 @@
                   <button type="button" class="btn btn-sm js-analyze"
                           data-url="{{ url_for('api_analyze', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.analysis_done else 'false' }}"
-                          data-result='{{ (d.analysis_result | tojson) if d.analysis_result else "" }}'>{{ 'Ver informe' if d.analysis_done else 'Analizar con IA' }}</button>
+                          data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
+                          data-result='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Ver informe' if d.analysis_done else 'Analizar con IA' }}</button>
                   {% endif %}
                   {% if tab.status in validation_states %}
                   <button type="button" class="btn btn-danger btn-sm js-reject"
@@ -192,10 +193,10 @@
     var DANGER_RE = /incoher[eè]nci|contradiccion|contradicci[oó]|duplicidad detectada|contenido similar detectado|coincidencia exacta/i;
     var FINDING_RE = /^\s*\*\*\d+\./m;
     var KINDS = {
-      analyze: { key: 'analysis_result', label: 'Analizar con IA', title: 'Auditoría de claridad (IA)' },
-      normative: { key: 'normative_analysis_result', label: 'Validación normativa', title: 'Validación normativa (IA)' },
+      analyze: { key: 'referente_analysis_result', pdfKind: 'referente', label: 'Analizar con IA', title: 'Auditoría de claridad (IA)' },
+      normative: { key: 'normative_analysis_result', pdfKind: 'normative', label: 'Validación normativa', title: 'Validación normativa (IA)' },
       duplicity: { key: 'duplicity_result', label: 'Detección de duplicidades', title: 'Detección de duplicidades' },
-      fidelity: { key: 'fidelity_analysis_result', label: 'Comprobar Fidelidad', doneLabel: 'Ver Informe Fidelidad', title: 'Comprobación de fidelidad (IA)' }
+      fidelity: { key: 'fidelity_analysis_result', pdfKind: 'fidelity', label: 'Comprobar Fidelidad', doneLabel: 'Ver Informe Fidelidad', title: 'Comprobación de fidelidad (IA)' }
     };
 
     function kindOf(btn) {
@@ -221,7 +222,8 @@
     }
 
     // Informes JSON de los agentes (normativo y fidelidad) -> HTML semántico. Todo se escapa.
-    function renderAIReport(data) {
+    // `plain`: tarjetas sin enlace al PDF (p. ej. el informe de claridad mostrado dentro de otra pestaña).
+    function renderAIReport(data, plain) {
       var msg = esc(data.missatge || data.mensaje || '');
       var note = data.nota ? '<p class="ai-note">' + esc(data.nota) + '</p>' : '';
       if (data.error) return '<div class="alert-danger"><p class="ai-title">' + msg + '</p></div>';
@@ -231,12 +233,14 @@
       var items = data.incoherencies || data.incoherencias || [];
       var cards = items.map(function (item) {
         var page = item.page_number;
-        return '<article class="incoherence-card" data-page="' + esc(page || 1) + '" tabindex="0" role="button" title="Ver en el PDF">' +
-          '<header class="card-head"><h5>' + esc(item.descripcio || item.titulo) + '</h5>' +
-          '<span class="page-badge">' + (page ? 'Página ' + esc(page) : 'Ver en PDF') + ' ➔</span></header>' +
+        var head = '<header class="card-head"><h5>' + esc(item.descripcio || item.titulo) + '</h5>' +
+          (plain ? '' : '<span class="page-badge">' + (page ? 'Página ' + esc(page) : 'Ver en PDF') + ' ➔</span>') + '</header>';
+        return '<article class="incoherence-card' + (plain ? ' static' : '') + '"' +
+          (plain ? '' : ' data-page="' + esc(page || 1) + '" tabindex="0" role="button" title="Ver en el PDF"') + '>' + head +
           '<p><strong>Frase analizada:</strong> ' + esc(item.frase_analizada) + '</p>' +
-          '<p><strong>Document / Normativa infringida:</strong> ' + esc(item.texto_infrinjido) + '</p>' +
+          (item.texto_infrinjido ? '<p><strong>Document / Normativa infringida:</strong> ' + esc(item.texto_infrinjido) + '</p>' : '') +
           '<p><strong>Explicació:</strong> ' + esc(item.explicacion) + '</p>' +
+          (item.propuesta ? '<div class="proposal"><strong>Propuesta de mejora:</strong> ' + esc(item.propuesta) + '</div>' : '') +
           '</article>';
       }).join('');
       return '<div class="alert-danger"><p class="ai-title">' + msg + '</p>' + cards + note + '</div>';
@@ -267,16 +271,17 @@
       try { return JSON.parse(raw); } catch (e) { return raw; }
     }
 
-    function renderReport(title, value) {
+    function renderReport(title, value, plain, pdfKind) {
       var section = document.createElement('section');
       section.className = 'report';
+      if (pdfKind) section.dataset.kind = pdfKind; // permite asociar cada tarjeta a su PDF anotado
       var h = document.createElement('h4');
       h.textContent = title;
       section.appendChild(h);
       var body = document.createElement('div');
       if (value && typeof value === 'object') {
-        body.innerHTML = renderAIReport(value);
-        body.querySelectorAll('.incoherence-card').forEach(function (card) {
+        body.innerHTML = renderAIReport(value, plain);
+        if (!plain) body.querySelectorAll('.incoherence-card').forEach(function (card) {
           function go() {
             var container = card.closest('.report-container');
             var tools = container && container.querySelector('.pdf-tools');
@@ -344,10 +349,10 @@
 
     // Documento original (todas las pestañas): <iframe> único al 100% del ancho, con toggle.
     var ORIGINAL_LABEL = 'Ver Documento Original';
-    function setOriginalLabel(btn, open) {
+    function setOriginalLabel(btn, open, text) {
       var tr = btn.closest('tr');
       var row = tr.classList.contains('expandable-row') ? tr : tr.nextElementSibling;
-      var label = open ? 'Ocultar Documento Original' : ORIGINAL_LABEL;
+      var label = text || (open ? 'Ocultar Documento Original' : ORIGINAL_LABEL);
       [tr, row].forEach(function (scope) {
         if (scope && scope.querySelectorAll) scope.querySelectorAll('.btn-ver-original').forEach(function (b) { b.textContent = label; });
       });
@@ -363,6 +368,8 @@
         pruneRow(btn);
         return;
       }
+      var tools = row && row.querySelector('.pdf-tools');
+      if (tools && tools.swapOriginal && tools.swapOriginal(btn.dataset.url)) return; // mismo iframe que el PDF anotado
       btn.disabled = true;
       // El servidor redirige al dashboard si el archivo físico falta: se detecta antes de incrustarlo.
       fetch(btn.dataset.url, { method: 'HEAD' })
@@ -421,7 +428,7 @@
       status.setAttribute('role', 'status');
       var viewer = document.createElement('div');
       viewer.className = 'pdf-viewer';
-      var frame = null, pdfUrl = '';
+      var frame = null, pdfUrl = '', lastPage = 1, showingOriginal = false;
 
       function setStatus(text, isError) {
         status.textContent = text;
@@ -430,7 +437,8 @@
 
       // Guarda las páginas localizadas en las tarjetas y en el dato almacenado del botón.
       function applyPages(list) {
-        var cards = box.parentElement ? box.parentElement.querySelectorAll('.incoherence-card') : [];
+        // solo las tarjetas de este informe (en la pestaña 2 también hay un informe de claridad)
+        var cards = box.parentElement ? box.parentElement.querySelectorAll('.report[data-kind="' + kind.pdfKind + '"] .incoherence-card') : [];
         var stored = parseStored(btn.dataset.result);
         var storedItems = stored && typeof stored === 'object' ? (stored.incoherencies || stored.incoherencias || []) : [];
         list.forEach(function (item, i) {
@@ -446,6 +454,8 @@
 
       // Salta a la página N y confirma visualmente la sincronización.
       function jumpTo(page, card) {
+        lastPage = page;
+        if (showingOriginal) { showingOriginal = false; setOriginalLabel(btn, false); }
         frame.hidden = false;
         frame.src = pdfUrl + '#page=' + page;
         button.textContent = 'Ocultar PDF anotado';
@@ -463,7 +473,7 @@
         fetch(btn.dataset.annotateUrl, {
           method: 'POST',
           headers: { 'Accept': 'application/json' },
-          body: new URLSearchParams({ kind: kind === KINDS.fidelity ? 'fidelity' : 'normative' })
+          body: new URLSearchParams({ kind: kind.pdfKind })
         })
           .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Respuesta no válida del servidor.' }; }); })
           .then(function (data) {
@@ -488,8 +498,29 @@
           .then(function () { button.disabled = false; });
       }
 
+      // El botón "Ver Documento Original" reutiliza este mismo <iframe> cuando ya existe.
+      function showAnnotated() {
+        showingOriginal = false;
+        frame.hidden = false;
+        frame.src = pdfUrl + '#page=' + lastPage;
+        button.textContent = 'Ocultar PDF anotado';
+        setOriginalLabel(btn, false);
+      }
+      box.swapOriginal = function (originalUrl) {
+        if (!frame) return false; // sin visor anotado, el llamador abre el visor del original
+        if (showingOriginal) { showAnnotated(); return true; }
+        showingOriginal = true;
+        frame.hidden = false;
+        frame.src = originalUrl;
+        button.textContent = 'Ver PDF anotado';
+        setOriginalLabel(btn, false, 'Ver PDF anotado');
+        frame.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return true;
+      };
+
       button.addEventListener('click', function () {
         if (!frame) { generate(null); return; }
+        if (showingOriginal) { showAnnotated(); return; }
         frame.hidden = !frame.hidden; // toggle del visor ya cargado
         button.textContent = frame.hidden ? 'Ver PDF anotado' : 'Ocultar PDF anotado';
       });
@@ -519,9 +550,9 @@
     function showReport(btn) {
       var kind = kindOf(btn);
       var nodes = [];
-      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referente Departamental', parseStored(btn.dataset.clarity)));
-      nodes.push(renderReport(kind.title, parseStored(btn.dataset.result)));
-      if (kind === KINDS.normative || kind === KINDS.fidelity) {
+      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referente Departamental', parseStored(btn.dataset.clarity), true));
+      nodes.push(renderReport(kind.title, parseStored(btn.dataset.result), false, kind.pdfKind));
+      if (kind.pdfKind) { // normativa, fidelidad y claridad (Referente): PDF anotado
         var tools = pdfTools(btn, kind, parseStored(btn.dataset.result));
         if (tools) nodes.push(tools);
       }
