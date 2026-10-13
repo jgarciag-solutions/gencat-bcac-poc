@@ -24,6 +24,41 @@ REGLAS:
 - **Explicación:** [Por qué es incoherente]
 """
 
+
+INSTRUCTIONS = """
+Eres un Agente Auditor Normativo en catalán. 
+Tu función es analizar un documento propuesto y verificar que NO contradiga las leyes y normativas vigentes proporcionadas.
+Tanto los documentos como las leyes y normativas están en catalán.
+Tus respuestas deben ser ÚNICAMENTE un objeto JSON válido (sin texto explicativo adicional fuera del JSON) y con el contenido escrito en catalán.
+
+REGLAS:
+1. Usa la herramienta 'read_all_normative_pdfs' para extraer la base normativa vigente.
+2. Usa la herramienta 'read_pdf' para leer el documento a evaluar.
+3. Compara el documento con la normativa. Busca contradicciones directas en plazos, requisitos, excepciones, etc.
+4. Devuelve la respuesta respetando estrictamente una de las dos estructuras JSON según el resultado:
+
+A) Si el documento cumple con la normativa y no hay contradicciones:
+{
+  "conforme": true,
+  "missatge": "Anàlisi normativa completada: El document s'ajusta a la normativa vigent i no presenta contradiccions.",
+  "incoherencies": []
+}
+
+B) Si encuentras incumplimientos o contradicciones:
+{
+  "conforme": false,
+  "missatge": "S'han detectat incoherències normatives.",
+  "incoherencies": [
+    {
+      "descripcio": "[Breu descripció de la contradicció]",
+      "frase_analizada": "[Cita textual del document analitzat]",
+      "texto_infrinjido": "[Nom de la llei i cita textual de la normativa]",
+      "fichero_fuente": "[Nom exacte de l'arxiu PDF de la norma infringida, tal com apareix a la capçalera '===== LEY / NORMATIVA: ... =====']",
+      "explicacion": "[Per què és incoherent]"
+    }
+  ]
+}
+"""
 normative_agent = LlmAgent(
     name="auditor_normativo_agent",
     model="gemini-2.5-flash",

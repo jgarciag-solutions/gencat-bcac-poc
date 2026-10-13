@@ -4,7 +4,7 @@
 <main class="dashboard-main">
   <header class="page-header">
     <div>
-      <h1>Documentos</h1>
+      <h1>Flujo de Gobernanza Documental</h1>
       <p>Estado del flujo de gobernanza documental, por rol.</p>
     </div>
   </header>
@@ -65,6 +65,12 @@
               <td><span class="badge badge-{{ d.badge }}">{{ d.status }}</span></td>
               <td>
                 <div class="actions">
+                  {% set viewable = d.filename.lower().rsplit('.', 1)[-1] in ['pdf', 'png', 'jpg', 'jpeg', 'txt'] %}
+                  {% if viewable %}
+                  <button type="button" class="btn btn-outline-secondary btn-sm btn-ver-original"
+                          data-url="{{ url_for('download', doc_id=d.id) }}"
+                          data-filename="{{ d.filename }}"> Ver Documento Original</button>
+                  {% endif %}
                   {% set needs_normative = tab.status == 'En validación - Pte. Unidad Finalista' %}
                   {% if d.can_advance %}
                   <form method="post" action="{{ url_for('avanzar_estado', doc_id=d.id) }}">
@@ -74,27 +80,29 @@
                   {% if needs_normative and d.filename.lower().endswith('.pdf') %}
                   <button type="button" class="btn btn-sm js-normative"
                           data-url="{{ url_for('api_validate_normative', doc_id=d.id) }}"
+                          data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.normative_analysis_done else 'false' }}"
-                          data-result="{{ d.normative_analysis_result or '' }}"
-                          data-clarity="{{ d.analysis_result or '' }}">{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
+                          data-result='{{ (d.normative_analysis_result | tojson) if d.normative_analysis_result else "" }}'
+                          data-clarity='{{ (d.analysis_result | tojson) if d.analysis_result else "" }}'>{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
                   {% endif %}
                   {% if tab.status == 'En validación - Pte. Responsable Canal' %}
                   <button type="button" class="btn btn-sm js-fidelity"
                           data-url="{{ url_for('api_check_fidelity', doc_id=d.id) }}"
+                          data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.fidelity_analysis_done else 'false' }}"
-                          data-result="{{ d.fidelity_analysis_result or '' }}">{{ 'Ver Informe Fidelidad' if d.fidelity_analysis_done else 'Comprobar Fidelidad' }}</button>
+                          data-result='{{ (d.fidelity_analysis_result | tojson) if d.fidelity_analysis_result else "" }}'>{{ 'Ver Informe Fidelidad' if d.fidelity_analysis_done else 'Comprobar Fidelidad' }}</button>
                   {% endif %}
                   {% if tab.status == 'En validación - Pte. Gestor Conocimiento' %}
                   <button type="button" class="btn btn-sm js-duplicity"
                           data-url="{{ url_for('api_detect_duplicity', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.duplicity_analysis_done else 'false' }}"
-                          data-result="{{ d.duplicity_result or '' }}">{{ 'Ver informe' if d.duplicity_analysis_done else 'Detección de duplicidades' }}</button>
+                          data-result='{{ (d.duplicity_result | tojson) if d.duplicity_result else "" }}'>{{ 'Ver informe' if d.duplicity_analysis_done else 'Detección de duplicidades' }}</button>
                   {% endif %}
                   {% if tab.status == 'En elaboración' and d.filename.lower().endswith('.pdf') %}
                   <button type="button" class="btn btn-sm js-analyze"
                           data-url="{{ url_for('api_analyze', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.analysis_done else 'false' }}"
-                          data-result="{{ d.analysis_result or '' }}">{{ 'Ver informe' if d.analysis_done else 'Analizar con IA' }}</button>
+                          data-result='{{ (d.analysis_result | tojson) if d.analysis_result else "" }}'>{{ 'Ver informe' if d.analysis_done else 'Analizar con IA' }}</button>
                   {% endif %}
                   {% if tab.status in validation_states %}
                   <button type="button" class="btn btn-danger btn-sm js-reject"
@@ -109,7 +117,7 @@
                     <button type="submit" class="btn btn-danger btn-sm">Retirar contenido</button>
                   </form>
                   {% endif %}
-                  {% if not d.can_advance and tab.status not in validation_states and tab.status != 'Publicada' %}
+                  {% if not viewable and not d.can_advance and tab.status not in validation_states and tab.status != 'Publicada' %}
                   <small>—</small>
                   {% endif %}
                 </div>
@@ -141,8 +149,6 @@
   </form>
 </dialog>
 
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <script>
   (function () {
     var buttons = document.querySelectorAll('.tab-btn');
@@ -208,38 +214,85 @@
       return 'alert-neutral';
     }
 
-    // Convierte "**1. título**" + lista en tarjetas de hallazgo.
-    function groupFindings(root) {
-      Array.prototype.slice.call(root.querySelectorAll('p')).forEach(function (p) {
-        var strong = p.firstElementChild;
-        if (!strong || strong.tagName !== 'STRONG' || !/^\d+\./.test(p.textContent.trim())) return;
-        var card = document.createElement('div');
-        card.className = 'finding';
-        p.before(card);
-        card.appendChild(p);
-        if (card.nextElementSibling && card.nextElementSibling.tagName === 'UL') card.appendChild(card.nextElementSibling);
+    function esc(v) {
+      return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
       });
     }
 
-    function renderReport(title, md) {
+    // Informes JSON de los agentes (normativo y fidelidad) -> HTML semántico. Todo se escapa.
+    function renderAIReport(data) {
+      var msg = esc(data.missatge || data.mensaje || '');
+      var note = data.nota ? '<p class="ai-note">' + esc(data.nota) + '</p>' : '';
+      if (data.error) return '<div class="alert-danger"><p class="ai-title">' + msg + '</p></div>';
+      if (data.conforme === true || data.fiel === true) {
+        return '<div class="alert-success"><p class="ai-title">' + msg + '</p>' + note + '</div>';
+      }
+      var items = data.incoherencies || data.incoherencias || [];
+      var cards = items.map(function (item) {
+        var page = item.page_number;
+        return '<article class="incoherence-card" data-page="' + esc(page || 1) + '" tabindex="0" role="button" title="Ver en el PDF">' +
+          '<header class="card-head"><h5>' + esc(item.descripcio || item.titulo) + '</h5>' +
+          '<span class="page-badge">' + (page ? 'Página ' + esc(page) : 'Ver en PDF') + ' ➔</span></header>' +
+          '<p><strong>Frase analizada:</strong> ' + esc(item.frase_analizada) + '</p>' +
+          '<p><strong>Document / Normativa infringida:</strong> ' + esc(item.texto_infrinjido) + '</p>' +
+          '<p><strong>Explicació:</strong> ' + esc(item.explicacion) + '</p>' +
+          '</article>';
+      }).join('');
+      return '<div class="alert-danger"><p class="ai-title">' + msg + '</p>' + cards + note + '</div>';
+    }
+
+    // Informes antiguos en Markdown (claridad, duplicidades): conversor mínimo sin librerías.
+    function markdownToHtml(md) {
+      var out = [], list = null, card = false;
+      function closeList() { if (list) { out.push('</ul>'); list = null; } }
+      function closeCard() { closeList(); if (card) { out.push('</div>'); card = false; } }
+      function inline(s) { return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>'); }
+      String(md).split('\n').forEach(function (raw) {
+        var line = raw.trim(), m;
+        if (!line) { closeList(); return; }
+        if ((m = line.match(/^#{1,6}\s+(.*)$/))) { closeCard(); out.push('<h3>' + inline(m[1]) + '</h3>'); }
+        else if (/^\*\*\d+\..*\*\*$/.test(line)) { closeCard(); out.push('<div class="finding"><p>' + inline(line) + '</p>'); card = true; }
+        else if ((m = line.match(/^[-*]\s+(.*)$/))) { if (!list) { out.push('<ul>'); list = true; } out.push('<li>' + inline(m[1]) + '</li>'); }
+        else if ((m = line.match(/^>\s?(.*)$/))) { closeCard(); out.push('<p class="ai-note">' + inline(m[1]) + '</p>'); }
+        else { closeList(); out.push('<p>' + inline(line) + '</p>'); }
+      });
+      closeCard();
+      return out.join('');
+    }
+
+    // El dato guardado en data-result / data-clarity es JSON (objeto o texto); '' si no hay.
+    function parseStored(raw) {
+      if (!raw) return '';
+      try { return JSON.parse(raw); } catch (e) { return raw; }
+    }
+
+    function renderReport(title, value) {
       var section = document.createElement('section');
       section.className = 'report';
       var h = document.createElement('h4');
       h.textContent = title;
-      var box = document.createElement('div');
-      box.className = alertClass(md);
-      var body = document.createElement('div');
-      body.className = 'md';
-      if (window.marked && window.DOMPurify) {
-        body.innerHTML = DOMPurify.sanitize(marked.parse(md)); // la salida del LLM se sanea siempre
-        groupFindings(body);
-      } else {
-        body.style.whiteSpace = 'pre-wrap'; // sin librerías (offline): texto plano
-        body.textContent = md;
-      }
-      box.appendChild(body);
       section.appendChild(h);
-      section.appendChild(box);
+      var body = document.createElement('div');
+      if (value && typeof value === 'object') {
+        body.innerHTML = renderAIReport(value);
+        body.querySelectorAll('.incoherence-card').forEach(function (card) {
+          function go() {
+            var container = card.closest('.report-container');
+            var tools = container && container.querySelector('.pdf-tools');
+            if (tools && tools.openAtPage) tools.openAtPage(Number(card.dataset.page) || 1, card);
+          }
+          card.addEventListener('click', go);
+          card.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+        });
+      } else {
+        body.className = alertClass(String(value));
+        var md = document.createElement('div');
+        md.className = 'md';
+        md.innerHTML = markdownToHtml(value);
+        body.appendChild(md);
+      }
+      section.appendChild(body);
       return section;
     }
 
@@ -248,27 +301,230 @@
       return next && next.classList.contains('expandable-row') ? next : null;
     }
 
-    function insertRow(btn, nodes) {
+    // Fila desplegable única por documento: zona de informes IA + visor del documento original (oculto).
+    function ensureRow(btn) {
+      var row = existingRow(btn);
+      if (row) return row;
       var tr = btn.closest('tr');
-      var old = existingRow(btn);
-      if (old) old.remove();
-      var row = document.createElement('tr');
+      row = document.createElement('tr');
       row.className = 'expandable-row';
       var cell = document.createElement('td');
       cell.colSpan = tr.children.length; // ocupa todas las columnas (colspan no admite "100%")
-      var wrap = document.createElement('div');
-      wrap.className = 'report-container';
-      nodes.forEach(function (n) { wrap.appendChild(n); });
-      cell.appendChild(wrap);
+      var reports = document.createElement('div');
+      reports.className = 'report-container';
+      var original = document.createElement('div');
+      original.className = 'original-viewer'; // display: none por defecto; .open lo muestra
+      cell.appendChild(reports);
+      cell.appendChild(original);
       row.appendChild(cell);
       tr.after(row);
+      return row;
+    }
+
+    function reportSlot(btn) { var row = existingRow(btn); return row && row.querySelector('.report-container'); }
+
+    // Elimina la fila si ya no tiene informe ni visor del original abiertos.
+    function pruneRow(btn) {
+      var row = existingRow(btn);
+      if (row && !row.querySelector('.report-container').childElementCount &&
+          !row.querySelector('.original-viewer').classList.contains('open')) row.remove();
+    }
+
+    function clearReport(btn) {
+      var slot = reportSlot(btn);
+      if (slot) slot.textContent = '';
+      pruneRow(btn);
+    }
+
+    function insertRow(btn, nodes) {
+      var slot = ensureRow(btn).querySelector('.report-container');
+      slot.textContent = '';
+      nodes.forEach(function (n) { slot.appendChild(n); });
+    }
+
+    // Documento original (todas las pestañas): <iframe> único al 100% del ancho, con toggle.
+    var ORIGINAL_LABEL = 'Ver Documento Original';
+    function setOriginalLabel(btn, open) {
+      var tr = btn.closest('tr');
+      var row = tr.classList.contains('expandable-row') ? tr : tr.nextElementSibling;
+      var label = open ? 'Ocultar Documento Original' : ORIGINAL_LABEL;
+      [tr, row].forEach(function (scope) {
+        if (scope && scope.querySelectorAll) scope.querySelectorAll('.btn-ver-original').forEach(function (b) { b.textContent = label; });
+      });
+    }
+
+    function toggleOriginal(btn) {
+      var row = existingRow(btn);
+      var holder = row && row.querySelector('.original-viewer');
+      if (holder && holder.classList.contains('open')) { // cerrar
+        holder.classList.remove('open');
+        holder.textContent = '';
+        setOriginalLabel(btn, false);
+        pruneRow(btn);
+        return;
+      }
+      btn.disabled = true;
+      // El servidor redirige al dashboard si el archivo físico falta: se detecta antes de incrustarlo.
+      fetch(btn.dataset.url, { method: 'HEAD' })
+        .then(function (r) {
+          if (r.redirected || !r.ok) throw new Error('Archivo físico no disponible');
+          var holder = ensureRow(btn).querySelector('.original-viewer');
+          holder.textContent = '';
+          var title = document.createElement('h4');
+          title.textContent = 'Documento original · ' + (btn.dataset.filename || '');
+          var frame = document.createElement('iframe');
+          frame.className = 'pdf-frame';
+          frame.title = 'Documento original';
+          frame.src = btn.dataset.url;
+          holder.appendChild(title);
+          holder.appendChild(frame);
+          holder.classList.add('open');
+          setOriginalLabel(btn, true);
+          holder.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        })
+        .catch(function (err) { // error en línea (sin pop-ups)
+          var holder = ensureRow(btn).querySelector('.original-viewer');
+          holder.textContent = '';
+          var box = document.createElement('div');
+          box.className = 'alert-danger';
+          var p = document.createElement('p');
+          p.className = 'ai-title';
+          p.textContent = err instanceof TypeError ? 'Error de red: no se pudo contactar con el servidor.' : err.message;
+          box.appendChild(p);
+          holder.appendChild(box);
+          holder.classList.add('open');
+          setOriginalLabel(btn, true);
+        })
+        .then(function () { btn.disabled = false; });
+    }
+
+    document.querySelectorAll('.btn-ver-original').forEach(function (b) {
+      b.addEventListener('click', function () { toggleOriginal(b); });
+    });
+
+    // PDF anotado bajo demanda (pestañas 2 y 4): botón con toggle e <iframe> único bajo las tarjetas.
+    // Las tarjetas sincronizan el visor con #page=N.
+    function pdfTools(btn, kind, value) {
+      var items = value && typeof value === 'object' ? (value.incoherencies || value.incoherencias || []) : [];
+      if (!items.length || !btn.dataset.annotateUrl) return null;
+      var LABEL = 'Generar y ver PDF anotado';
+      var box = document.createElement('div');
+      box.className = 'pdf-tools';
+      var bar = document.createElement('div');
+      bar.className = 'pdf-bar';
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-sm';
+      button.textContent = LABEL;
+      var status = document.createElement('span');
+      status.className = 'pdf-status';
+      status.setAttribute('role', 'status');
+      var viewer = document.createElement('div');
+      viewer.className = 'pdf-viewer';
+      var frame = null, pdfUrl = '';
+
+      function setStatus(text, isError) {
+        status.textContent = text;
+        status.classList.toggle('error', !!isError);
+      }
+
+      // Guarda las páginas localizadas en las tarjetas y en el dato almacenado del botón.
+      function applyPages(list) {
+        var cards = box.parentElement ? box.parentElement.querySelectorAll('.incoherence-card') : [];
+        var stored = parseStored(btn.dataset.result);
+        var storedItems = stored && typeof stored === 'object' ? (stored.incoherencies || stored.incoherencias || []) : [];
+        list.forEach(function (item, i) {
+          if (!item || !item.page_number) return;
+          if (cards[i]) {
+            cards[i].dataset.page = item.page_number;
+            cards[i].querySelector('.page-badge').textContent = 'Página ' + item.page_number + ' ➔';
+          }
+          if (storedItems[i]) storedItems[i].page_number = item.page_number;
+        });
+        if (stored && typeof stored === 'object') btn.dataset.result = JSON.stringify(stored);
+      }
+
+      // Salta a la página N y confirma visualmente la sincronización.
+      function jumpTo(page, card) {
+        frame.hidden = false;
+        frame.src = pdfUrl + '#page=' + page;
+        button.textContent = 'Ocultar PDF anotado';
+        box.parentElement.querySelectorAll('.incoherence-card.active').forEach(function (c) { c.classList.remove('active'); });
+        if (card) card.classList.add('active');
+        frame.classList.add('synced');
+        setTimeout(function () { frame.classList.remove('synced'); }, 1200);
+        frame.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      function generate(page, card) {
+        button.disabled = true;
+        button.textContent = 'Anotando PDF...';
+        setStatus('', false);
+        fetch(btn.dataset.annotateUrl, {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' },
+          body: new URLSearchParams({ kind: kind === KINDS.fidelity ? 'fidelity' : 'normative' })
+        })
+          .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Respuesta no válida del servidor.' }; }); })
+          .then(function (data) {
+            if (data.ok) {
+              pdfUrl = data.pdf_url;
+              frame = document.createElement('iframe');
+              frame.className = 'pdf-frame';
+              frame.title = 'PDF anotado';
+              viewer.appendChild(frame);
+              applyPages(data.incoherencias || []);
+              jumpTo(page || Number(card && card.dataset.page) || 1, card);
+              setStatus(data.mensaje || '', false);
+            } else {
+              button.textContent = LABEL;
+              setStatus('Error: ' + (data.error || 'no se pudo generar el PDF anotado.'), true);
+            }
+          })
+          .catch(function () {
+            button.textContent = LABEL;
+            setStatus('Error de red: no se pudo contactar con el servidor.', true);
+          })
+          .then(function () { button.disabled = false; });
+      }
+
+      button.addEventListener('click', function () {
+        if (!frame) { generate(null); return; }
+        frame.hidden = !frame.hidden; // toggle del visor ya cargado
+        button.textContent = frame.hidden ? 'Ver PDF anotado' : 'Ocultar PDF anotado';
+      });
+
+      // Llamado por las tarjetas de hallazgo.
+      box.openAtPage = function (page, card) {
+        if (button.disabled) return;
+        if (frame) jumpTo(page, card); else generate(page, card);
+      };
+
+      bar.appendChild(button);
+      var origin = btn.closest('tr').querySelector('.btn-ver-original');
+      if (origin) { // acceso directo al visor del original, junto al botón del PDF anotado
+        var mirror = document.createElement('button');
+        mirror.type = 'button';
+        mirror.className = 'btn btn-outline-secondary btn-sm btn-ver-original';
+        mirror.textContent = origin.textContent;
+        mirror.addEventListener('click', function () { origin.click(); });
+        bar.appendChild(mirror);
+      }
+      bar.appendChild(status);
+      box.appendChild(bar);
+      box.appendChild(viewer);
+      return box;
     }
 
     function showReport(btn) {
       var kind = kindOf(btn);
       var nodes = [];
-      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referente Departamental', btn.dataset.clarity));
-      nodes.push(renderReport(kind.title, btn.dataset.result));
+      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referente Departamental', parseStored(btn.dataset.clarity)));
+      nodes.push(renderReport(kind.title, parseStored(btn.dataset.result)));
+      if (kind === KINDS.normative || kind === KINDS.fidelity) {
+        var tools = pdfTools(btn, kind, parseStored(btn.dataset.result));
+        if (tools) nodes.push(tools);
+      }
       if (kind !== KINDS.normative) { // re-ejecutar (la validación normativa no se repite)
         var again = document.createElement('button');
         again.type = 'button';
@@ -303,8 +559,7 @@
     function runReport(btn) {
       var kind = kindOf(btn);
       var wasDone = btn.dataset.done === 'true';
-      var old = existingRow(btn);
-      if (old) old.remove();
+      clearReport(btn);
       btn.disabled = true;
       btn.classList.add('loading');
       btn.textContent = 'Cargando…';
@@ -318,7 +573,7 @@
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Respuesta no válida del servidor.' }; }); })
         .then(function (data) {
           if (data.ok) {
-            btn.dataset.result = data[kind.key];
+            btn.dataset.result = JSON.stringify(data[kind.key]); // objeto (JSON) o texto
             setDone(btn, true);
             showReport(btn);
           } else {
@@ -332,8 +587,8 @@
     document.querySelectorAll('.js-analyze, .js-normative, .js-duplicity, .js-fidelity').forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (btn.dataset.done !== 'true') { runReport(btn); return; }
-        var row = existingRow(btn);
-        if (row) row.remove(); else showReport(btn); // toggle
+        var slot = reportSlot(btn);
+        if (slot && slot.childElementCount) clearReport(btn); else showReport(btn); // toggle
       });
     });
   })();

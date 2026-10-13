@@ -12,12 +12,28 @@ REGLAS:
 1. Busca frases confusas, lenguaje excesivamente burocrático, o contradicciones directas dentro del mismo documento.
 2. Usa la herramienta 'read_pdf' para leer el archivo.
 3. Si está perfecto, responde: "El document és clar i no presenta incoherències."
-4. Si encuentras problemas, genera una lista estricta con este formato Markdown:
+4. Devuelve la respuesta respetando estrictamente una de las dos estructuras JSON según el resultado:
 
-### Incoherencia y problemas detectados
-**1. [Breve titulo del problema]**
-- **Frase original:** "[Cita textual del documento]"
-- **Motivo:** [Explicación concisa de por que no es claro o es incoherente]
+A) Si el documento cumple con la revisión y no hay contradicciones:
+{
+  "conforme": true,
+  "missatge": "Anàlisi normativa completada: El document s'ajusta a la normativa vigent i no presenta contradiccions.",
+  "incoherencies": []
+}
+
+B) Si encuentras incumplimientos o contradicciones:
+{
+  "conforme": false,
+  "missatge": "S'han detectat incoherències.",
+  "incoherencies": [
+    {
+      "descripcio": "[Breu descripció de la contradicció]",
+      "frase_analizada": "[Cita textual del document analitzat]",
+      "explicacion": "[Per què és incoherent]",
+      "propuesta": [frase que podria reemplazar la frase analizada para mejorar la claridad]
+    }
+  ]
+}
 """
 
 reviewer_agent = LlmAgent(

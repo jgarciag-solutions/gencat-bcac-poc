@@ -4,3 +4,4 @@ pdfplumber
 python-dotenv
 simhash
 numpy
+PyMuPDF

@@ -1,6 +1,7 @@
 """POC BCAC - Flujo de gobernanza documental (Flask, persistencia en JSON)."""
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import date
@@ -12,6 +13,7 @@ from flask import (Flask, abort, flash, jsonify, redirect, render_template, requ
 from werkzeug.utils import secure_filename
 
 import gestor_conocimiento
+from pdf_annotator import annotate_pdf_with_ai_results
 from pipeline import process_document
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -44,7 +46,7 @@ S_PUB = "Publicada"
 S_RET = "Retirada"
 STATES = [S_ELAB, S_UF, S_GC, S_RC, S_PUB, S_RET]
 
-CONTENT_TYPES = ["Base", "Adaptado"]
+CONTENT_TYPES = ["Base", "Adaptado", "Referenciado"]
 
 # Flujo secuencial según el tipo de contenido (Modelo de Contenidos).
 FLOWS = {
@@ -225,6 +227,28 @@ def source_titles(doc, titles):
     if isinstance(src, list):
         return [titles.get(i, i) for i in src]
     return [src] if src else []
+
+
+def clean_and_parse_json(llm_response: str) -> dict:
+    """Parsea la respuesta JSON de un agente, tolerando vallas Markdown accidentales.
+
+    Devuelve el diccionario, o {"error": True, "mensaje": ...} si no es JSON válido.
+    """
+    error = {"error": True, "mensaje": "Fallo al procesar la respuesta de la IA."}
+    cleaned = re.sub(r"```json|```", "", llm_response or "").strip()
+    try:
+        data = json.loads(cleaned)
+    except (ValueError, TypeError):
+        # texto extra alrededor del objeto: se intenta con lo que hay entre la primera { y la última }
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        try:
+            data = json.loads(cleaned[start:end + 1]) if 0 <= start < end else None
+        except ValueError:
+            data = None
+    if not isinstance(data, dict):
+        app.logger.warning("Respuesta de la IA no es un JSON válido: %.300s", llm_response)
+        return error
+    return data
 
 
 def taxonomy_paths():
@@ -546,10 +570,12 @@ def api_validate_normative(doc_id):
             return jsonify(ok=False, error="No hay leyes cargadas en la carpeta normativa/. "
                                            "Añade archivos PDF de normativa y vuelve a intentarlo."), 409
         from agents.normative_agent import run_normative_review  # import diferido
-        result = run_normative_review(path)
+        result = clean_and_parse_json(run_normative_review(path))
     except Exception as exc:
         app.logger.exception("Fallo en la validación normativa de %s", doc_id)
         return jsonify(ok=False, error=f"No se pudo completar la validación: {exc}"), 502
+    if result.get("error"):  # respuesta no parseable: no se guarda como completada
+        return jsonify(ok=False, error=result["mensaje"]), 502
 
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante la llamada al modelo
         docs = load_documents()
@@ -632,12 +658,14 @@ def api_check_fidelity(doc_id):
 
     try:
         from agents.comprobar_fidelidad import run_fidelity_check  # import diferido
-        result = run_fidelity_check(adapted_path, source_paths)
+        result = clean_and_parse_json(run_fidelity_check(adapted_path, source_paths))
     except Exception as exc:
         app.logger.exception("Fallo en la comprobación de fidelidad de %s", doc_id)
         return jsonify(ok=False, error=f"No se pudo completar la comprobación: {exc}"), 502
+    if result.get("error"):  # respuesta no parseable: no se guarda como completada
+        return jsonify(ok=False, error=result["mensaje"]), 502
     if missing:
-        result += f"\n\n> Nota: {missing} documento(s) fuente no se pudieron incluir por no tener un PDF disponible."
+        result["nota"] = f"{missing} documento(s) fuente no se pudieron incluir por no tener un PDF disponible."
 
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante la llamada al modelo
         docs = load_documents()
@@ -648,6 +676,80 @@ def api_check_fidelity(doc_id):
         doc["fidelity_analysis_done"] = True
         save_documents(docs)
     return jsonify(ok=True, fidelity_analysis_result=result)
+
+
+ANNOTATED_RE = re.compile(r"[0-9a-f]{8}_annotated\.pdf")
+
+
+def incoherencias_of(result):
+    """Lista de incoherencias de un resultado de IA (JSON); [] si no hay o el formato es antiguo."""
+    if not isinstance(result, dict):
+        return []
+    items = result.get("incoherencies") or result.get("incoherencias") or []
+    return [i for i in items if isinstance(i, dict)]
+
+
+@app.route("/api/generate_annotated_pdf/<doc_id>", methods=["POST"])
+def api_generate_annotated_pdf(doc_id):
+    """Genera uploads/{doc_id}_annotated.pdf con las incoherencias de la IA resaltadas."""
+    if current_user() is None:
+        return jsonify(ok=False, error="Sesión no iniciada."), 401
+    doc = find_doc(load_documents(), doc_id)
+    if doc is None:
+        return jsonify(ok=False, error="Documento no encontrado."), 404
+
+    results = {"normative": doc.get("normative_analysis_result"), "fidelity": doc.get("fidelity_analysis_result")}
+    kind = request.form.get("kind")
+    if kind not in results:  # sin indicar: el análisis disponible (el de su fase tiene prioridad)
+        order = ["fidelity", "normative"] if doc["status"] == S_RC else ["normative", "fidelity"]
+        kind = next((k for k in order if results[k]), None)
+    if not kind or not results[kind]:
+        return jsonify(ok=False, error="El documento no tiene un análisis de IA previo."), 400
+    incoherencias = incoherencias_of(results[kind])
+    if not incoherencias:
+        return jsonify(ok=False, error="El análisis no contiene incoherencias que anotar."), 400
+
+    filename = doc.get("filename") or ""
+    original = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    if not filename.lower().endswith(".pdf"):
+        return jsonify(ok=False, error="Solo se pueden anotar documentos PDF."), 400
+    if not os.path.isfile(original):
+        return jsonify(ok=False, error="Archivo físico no disponible"), 404
+
+    annotated_name = f"{doc_id}_annotated.pdf"
+    annotated = os.path.join(app.config["UPLOAD_FOLDER"], annotated_name)
+    saved, enriched = annotate_pdf_with_ai_results(original, annotated, incoherencias)
+    if not saved:
+        return jsonify(ok=False, error="No se pudo localizar ninguna de las frases analizadas en el PDF "
+                                       "(¿es un documento escaneado o el texto difiere?)."), 422
+    pages = [i.get("page_number") for i in enriched]
+    found = sum(1 for n in pages if n)
+    message = f"Se anotaron {found} de {len(pages)} frases."
+    if found < len(pages):
+        message += " Las restantes no se localizaron literalmente en el PDF."
+
+    with DOCS_LOCK:  # se guardan las páginas junto a cada hallazgo para poder navegar sin regenerar
+        docs = load_documents()
+        stored = find_doc(docs, doc_id)
+        if stored is not None:
+            field = "normative_analysis_result" if kind == "normative" else "fidelity_analysis_result"
+            for item, page_number in zip(incoherencias_of(stored.get(field)), pages):
+                item["page_number"] = page_number
+            save_documents(docs)
+    version = int(os.path.getmtime(annotated))  # evita que el navegador muestre una versión en caché
+    return jsonify(ok=True, pdf_url=url_for("serve_annotated", filename=annotated_name, v=version),
+                   mensaje=message, incoherencias=enriched)
+
+
+@app.route("/uploads/<path:filename>")
+@login_required
+def serve_annotated(filename):
+    """Sirve solo los PDF anotados; nunca documents.json ni el resto de uploads/."""
+    if not ANNOTATED_RE.fullmatch(filename):
+        abort(404)
+    if not os.path.isfile(os.path.join(app.config["UPLOAD_FOLDER"], filename)):
+        abort(404)
+    return send_from_directory(app.config["UPLOAD_FOLDER"], filename, mimetype="application/pdf")
 
 
 @app.route("/download/<doc_id>")
