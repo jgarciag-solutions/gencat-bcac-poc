@@ -45,6 +45,9 @@ a:hover { text-decoration: underline; }
   height: 60px;
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
 }
 .brand { display: flex; align-items: center; gap: 14px; text-decoration: none; }
 .brand:hover { text-decoration: none; }
@@ -370,3 +373,11 @@ input:disabled, select:disabled, textarea:disabled { background: #f1f3f5; color:
 .label-text { font-weight: 600; font-size: 13px; }
 .label-text small { font-weight: 400; color: var(--color-muted); }
 .full-row { grid-column: 1 / -1; }
+
+/* Salida animada de filas eliminadas */
+.row-fade-out {
+  transition: opacity 0.35s ease, transform 0.35s ease;
+  opacity: 0;
+  transform: translateX(40px);
+}
+.retirar-error { color: var(--color-danger); font-weight: 600; align-self: center; }

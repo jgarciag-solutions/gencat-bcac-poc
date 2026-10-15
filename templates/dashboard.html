@@ -114,9 +114,8 @@
                   <form method="post" action="{{ url_for('versionar', doc_id=d.id) }}">
                     <button type="submit" class="btn btn-sm">Crear nueva versión</button>
                   </form>
-                 <form method="post" action="{{ url_for('retirar', doc_id=d.id) }}">
-                    <button type="submit" class="btn btn-danger btn-sm">Retirar contenido</button>
-                  </form>
+                  <button type="button" class="btn btn-danger btn-sm js-retirar"
+                          data-url="{{ url_for('api_retirar', doc_id=d.id) }}">Retirar contenido</button>
                   {% endif %}
                   {% if not viewable and not d.can_advance and tab.status not in validation_states and tab.status != 'Publicada' %}
                   <small>—</small>
@@ -404,6 +403,45 @@
         })
         .then(function () { btn.disabled = false; });
     }
+
+    // Retirar contenido (pestaña Publicados): borrado físico y lógico, sin diálogo de confirmación.
+    document.querySelectorAll('.js-retirar').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var tr = btn.closest('tr');
+        var pane = tr.closest('.tab-pane');
+        var tbody = tr.parentElement;
+        btn.disabled = true;
+        var oldMsg = btn.parentElement.querySelector('.retirar-error');
+        if (oldMsg) oldMsg.remove();
+        fetch(btn.dataset.url, { method: 'POST', headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json().catch(function () { return { success: false, error: 'Respuesta no válida del servidor.' }; }); })
+          .then(function (data) {
+            if (!data.success) throw new Error(data.error || 'No se pudo retirar el contenido.');
+            var next = tr.nextElementSibling;
+            var detail = next && next.classList.contains('expandable-row') ? next : null;
+            tr.classList.add('row-fade-out');
+            if (detail) detail.classList.add('row-fade-out');
+            setTimeout(function () {
+              tr.remove();
+              if (detail) detail.remove();
+              var counter = document.querySelector('[data-target="' + pane.id + '"] .tab-count');
+              if (counter) counter.textContent = Math.max(0, (parseInt(counter.textContent, 10) || 0) - 1);
+              if (!tbody.querySelector('tr')) { // la pestaña se queda sin documentos
+                var empty = document.createElement('tr');
+                empty.innerHTML = '<td colspan="9" class="empty">No hay documentos en esta fase.</td>';
+                tbody.appendChild(empty);
+              }
+            }, 350);
+          })
+          .catch(function (err) { // error en línea, sin pop-ups
+            btn.disabled = false;
+            var msg = document.createElement('small');
+            msg.className = 'retirar-error';
+            msg.textContent = err instanceof TypeError ? 'Error de red.' : err.message;
+            btn.after(msg);
+          });
+      });
+    });
 
     document.querySelectorAll('.btn-ver-original').forEach(function (b) {
       b.addEventListener('click', function () { toggleOriginal(b); });

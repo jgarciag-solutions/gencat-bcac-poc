@@ -47,7 +47,7 @@
               <div class="tipologia-container" id="tipologia-container">
                 {% for name in tipologias %}
                 <label class="tipologia-item">
-                  <input type="checkbox" name="tipologia" value="{{ name }}" {{ 'checked' if name in selected_tipologia }}>
+                  <input type="radio" name="tipologia" value="{{ name }}" {{ 'checked' if name in selected_tipologia }}>
                   {{ name }}
                 </label>
                 {% endfor %}

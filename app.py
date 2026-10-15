@@ -43,8 +43,7 @@ S_UF = "En validación - Pte. Unidad Finalista"
 S_GC = "En validación - Pte. Gestor Conocimiento"
 S_RC = "En validación - Pte. Responsable Canal"
 S_PUB = "Publicada"
-S_RET = "Retirada"
-STATES = [S_ELAB, S_UF, S_GC, S_RC, S_PUB, S_RET]
+STATES = [S_ELAB, S_UF, S_GC, S_RC, S_PUB]
 
 CONTENT_TYPES = ["Base", "Adaptado", "Referenciado"]
 
@@ -64,7 +63,6 @@ TABS = [
     {"role": "Gestor del Conocimiento", "status": S_GC},
     {"role": "Responsable de Canal", "status": S_RC},
     {"role": "Publicados", "status": S_PUB},
-    {"role": "Archivo", "status": S_RET},
 ]
 
 ACTION_LABEL = {
@@ -582,16 +580,47 @@ def versionar(doc_id):
     return change_document(doc_id, action)
 
 
-@app.route("/retirar/<doc_id>", methods=["POST"])
-@login_required
-def retirar(doc_id):
-    def action(doc, _user):
+@app.route("/api/documents/retirar/<doc_id>", methods=["POST"])
+def api_retirar(doc_id):
+    """Retira un documento publicado: borra sus archivos, su registro y las referencias a él."""
+    if current_user() is None:
+        return jsonify(success=False, error="Sesión no iniciada."), 401
+    with DOCS_LOCK:
+        docs = load_documents()
+        doc = find_doc(docs, doc_id)
+        if doc is None:
+            return jsonify(success=False, error="Documento no encontrado."), 404
         if doc["status"] != S_PUB:
-            flash("Solo se puede retirar un documento publicado.", "error")
-            return None
-        doc["status"] = S_RET
-        return f"«{doc['title']}» retirado y enviado a Archivo.", "success"
-    return change_document(doc_id, action)
+            return jsonify(success=False, error="Solo se puede retirar un documento publicado."), 409
+
+        remaining = [d for d in docs if d["id"] != doc_id]
+        for other in remaining:  # integridad referencial: sin referencias huérfanas al documento retirado
+            for key in ("unidades_base_origen", "contenidos_relacionados"):
+                if isinstance(other.get(key), list):
+                    other[key] = [i for i in other[key] if i != doc_id]
+        try:
+            save_documents(remaining)  # primero el registro: si falla, no se borra ningún archivo
+        except OSError:
+            app.logger.exception("No se pudo guardar documents.json al retirar %s", doc_id)
+            return jsonify(success=False, error="No se pudo actualizar la base documental."), 500
+
+        # Archivos del documento: el original, sus PDF anotados ({id}_...) y su archivo de vectores.
+        keep = {"documents.json"} | {d.get("filename") for d in remaining}  # nunca archivos de otros documentos
+        folder = app.config["UPLOAD_FOLDER"]
+        targets = {doc.get("filename") or ""}
+        targets.update(f for f in os.listdir(folder) if f.startswith(f"{doc_id}_"))
+        paths = [os.path.join(folder, f) for f in targets if f and f not in keep]
+        if doc.get("vector_file"):
+            paths.append(os.path.join(BASE_DIR, "vectores", os.path.basename(doc["vector_file"])))
+        for path in paths:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                app.logger.exception("No se pudo eliminar %s", path)
+    return jsonify(success=True, message="Documento y archivos asociados eliminados correctamente",
+                   deleted_id=doc_id)
 
 
 @app.route("/api/analyze/<doc_id>", methods=["POST"])
