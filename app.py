@@ -40,45 +40,55 @@ USERS = {
 
 S_ELAB = "En elaboración"
 S_UF = "En validación - Pte. Unidad Finalista"
-S_GC = "En validación - Pte. Gestor Conocimiento"
-S_RC = "En validación - Pte. Responsable Canal"
+S_GCB = "En validación - Pte. Gestor Conocimiento Base"
+S_GCC = "En validación - Pte. Gestor Conocimiento Canal"
 S_PUB = "Publicada"
-STATES = [S_ELAB, S_UF, S_GC, S_RC, S_PUB]
+STATES = [S_ELAB, S_UF, S_GCB, S_GCC, S_PUB]
 
 CONTENT_TYPES = ["Base", "Adaptado", "Referenciado"]
 
 # Flujo secuencial según el tipo de contenido (Modelo de Contenidos).
 FLOWS = {
-    "Base": [S_ELAB, S_UF, S_GC, S_PUB],
-    "Adaptado": [S_ELAB, S_RC, S_PUB],
+    "Base": [S_ELAB, S_UF, S_GCB, S_PUB],
+    "Adaptado": [S_ELAB, S_GCC, S_PUB],
 }
 
 # Estados de validación: aquí se puede aprobar o rechazar.
-VALIDATION_STATES = {S_UF, S_GC, S_RC}
+VALIDATION_STATES = {S_UF, S_GCB, S_GCC}
 
 # Pestañas del dashboard: cada rol ve los documentos en su micro-estado.
 TABS = [
-    {"role": "Referente Departamental", "status": S_ELAB},
-    {"role": "Validador Finalista", "status": S_UF},
-    {"role": "Gestor del Conocimiento", "status": S_GC},
-    {"role": "Responsable de Canal", "status": S_RC},
-    {"role": "Publicados", "status": S_PUB},
+    {"role": "Referente Departamental", "slug": "referente-departamental", "status": S_ELAB},
+    {"role": "Validador Finalista", "slug": "validador-finalista", "status": S_UF},
+    {"role": "Gestor Conocimiento Base", "slug": "gestor-conocimiento-base", "status": S_GCB},
+    {"role": "Gestor Conocimiento Canal", "slug": "gestor-conocimiento-canal", "status": S_GCC},
+    {"role": "Publicados", "slug": "publicados", "status": S_PUB},
 ]
 
 ACTION_LABEL = {
     S_ELAB: "Enviar a validación",
     S_UF: "Aprobar",
-    S_GC: "Aprobar",
-    S_RC: "Aprobar",
+    S_GCB: "Aprobar",
+    S_GCC: "Aprobar",
 }
 
 # Estados del modelo anterior -> micro-estados actuales (migración al leer el JSON).
 LEGACY_STATUS = {
     "1. Pendiente Supervisión": S_ELAB,
     "2. Pendiente Validación Base": S_UF,
-    "3. Pendiente Revisión GC": S_GC,
-    "4. Pendiente Adaptación Canal": S_RC,
+    "3. Pendiente Revisión GC": S_GCB,
+    "4. Pendiente Adaptación Canal": S_GCC,
     "5. Publicado": S_PUB,
+    # nombres de los roles antes de la sincronización de terminología
+    "En validación - Pte. Gestor Conocimiento": S_GCB,
+    "En validación - Pte. Responsable Canal": S_GCC,
+}
+
+# Responsables con el nombre antiguo -> nuevo (se migran al leer el JSON).
+LEGACY_RESPONSABLE = {
+    "Gestor del Conocimiento": "Gestor Conocimiento Base",
+    "Responsable de canal": "Gestor Conocimiento Canal",
+    "Responsable de Canal": "Gestor Conocimiento Canal",
 }
 
 TAXONOMY = {
@@ -148,6 +158,10 @@ def write_json(docs):
 def normalize(doc):
     """Completa los campos nuevos y migra estados antiguos de registros previos."""
     doc["status"] = LEGACY_STATUS.get(doc.get("status"), doc.get("status"))
+    if "estado" in doc:  # el campo informativo `estado` sigue a `status`
+        doc["estado"] = doc["status"]
+    if doc.get("responsable") in LEGACY_RESPONSABLE:
+        doc["responsable"] = LEGACY_RESPONSABLE[doc["responsable"]]
     tax = doc.get("taxonomy")
     doc["taxonomy"] = [tax] if isinstance(tax, str) and tax else (tax if isinstance(tax, list) else [])
     doc.setdefault("content_type", "Base")
@@ -249,7 +263,8 @@ def can_advance(doc):
 
 
 def tab_anchor(status):
-    return f"#tab-{STATES.index(status) + 1}" if status in STATES else ""
+    """Hash (#slug) de la pestaña que muestra los documentos en ese estado."""
+    return next((f"#{t['slug']}" for t in TABS if t["status"] == status), "")
 
 
 def published_base_docs(docs):
@@ -325,6 +340,16 @@ def logout():
     return redirect(url_for("login"))
 
 
+def get_sort_date(d):
+    """Clave de ordenación tolerante: soporta el esquema nuevo y registros con campos antiguos."""
+    return (
+        d.get("fecha_publicacion_version")
+        or d.get("date")
+        or d.get("fecha")
+        or d.get("id", "")
+    )
+
+
 @app.route("/dashboard")
 @login_required
 def dashboard():
@@ -335,7 +360,7 @@ def dashboard():
              "action": ACTION_LABEL.get(d["status"], ""),
              "badge": STATES.index(d["status"]) + 1 if d["status"] in STATES else 0}
             for d in docs]
-    rows.sort(key=lambda d: d["date"], reverse=True)
+    rows.sort(key=get_sort_date, reverse=True)
     tabs = [{**t, "docs": [d for d in rows if d["status"] == t["status"]]} for t in TABS]
     return render_template("dashboard.html", tabs=tabs, validation_states=VALIDATION_STATES)
 
@@ -714,8 +739,8 @@ def api_detect_duplicity(doc_id):
     doc = find_doc(docs, doc_id)
     if doc is None:
         return jsonify(ok=False, error="Documento no encontrado."), 404
-    if doc["status"] != S_GC:
-        return jsonify(ok=False, error="El documento no está pendiente del Gestor del Conocimiento."), 409
+    if doc["status"] != S_GCB:
+        return jsonify(ok=False, error="El documento no está pendiente del Gestor Conocimiento Base."), 409
     try:
         result = gestor_conocimiento.detect_document_duplicity(
             doc_id, docs, vectors_dir=os.path.join(BASE_DIR, "vectores"),
@@ -744,8 +769,8 @@ def api_check_fidelity(doc_id):
     doc = find_doc(docs, doc_id)
     if doc is None:
         return jsonify(ok=False, error="Documento no encontrado."), 404
-    if doc["status"] != S_RC:
-        return jsonify(ok=False, error="El documento no está pendiente del Responsable de Canal."), 409
+    if doc["status"] != S_GCC:
+        return jsonify(ok=False, error="El documento no está pendiente del Gestor Conocimiento Canal."), 409
     folder = app.config["UPLOAD_FOLDER"]
     filename = doc.get("filename") or ""
     adapted_path = os.path.join(folder, filename)
@@ -821,7 +846,7 @@ def api_generate_annotated_pdf(doc_id):
                      "referente": "referente_analysis_result"}
     kind = request.form.get("kind")
     if kind not in results:  # sin indicar: el análisis disponible (el de su fase tiene prioridad)
-        order = {S_RC: ["fidelity", "normative", "referente"], S_ELAB: ["referente", "normative", "fidelity"]}
+        order = {S_GCC: ["fidelity", "normative", "referente"], S_ELAB: ["referente", "normative", "fidelity"]}
         kind = next((k for k in order.get(doc["status"], ["normative", "fidelity", "referente"]) if results[k]), None)
     if not kind or not results[kind]:
         return jsonify(ok=False, error="El documento no tiene un análisis de IA previo."), 400

@@ -1,4 +1,4 @@
-"""Detección de duplicidades para el Gestor del Conocimiento (SimHash + similitud vectorial)."""
+"""Detección de duplicidades para el Gestor Conocimiento Base (SimHash + similitud vectorial)."""
 import json
 import logging
 import os

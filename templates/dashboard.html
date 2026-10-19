@@ -12,8 +12,8 @@
   <nav class="tabs" role="tablist" aria-label="Flujo por rol">
     {% for tab in tabs %}
     <button type="button" class="tab-btn{{ ' active' if loop.first }}" role="tab"
-            id="btn-tab-{{ loop.index }}" data-target="tab-{{ loop.index }}"
-            aria-controls="tab-{{ loop.index }}" aria-selected="{{ 'true' if loop.first else 'false' }}">
+            id="tab-{{ tab.slug }}" data-tab="{{ tab.slug }}"
+            aria-controls="pane-{{ tab.slug }}" aria-selected="{{ 'true' if loop.first else 'false' }}">
       {{ tab.role }}
       <span class="tab-count">{{ tab.docs | length }}</span>
     </button>
@@ -21,8 +21,8 @@
   </nav>
 
   {% for tab in tabs %}
-  <section class="tab-pane{{ ' active' if loop.first }}" id="tab-{{ loop.index }}" role="tabpanel"
-           aria-labelledby="btn-tab-{{ loop.index }}">
+  <section class="tab-pane{{ ' active' if loop.first }}" id="pane-{{ tab.slug }}" role="tabpanel"
+           aria-labelledby="tab-{{ tab.slug }}">
     <div class="pane-header">
       <p>Pendientes de acción · <span class="badge badge-{{ loop.index }}">{{ tab.status }}</span></p>
       {% if loop.first %}
@@ -85,14 +85,14 @@
                           data-result='{{ (d.normative_analysis_result | tojson) if d.normative_analysis_result else "" }}'
                           data-clarity='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
                   {% endif %}
-                  {% if tab.status == 'En validación - Pte. Responsable Canal' %}
+                  {% if tab.status == 'En validación - Pte. Gestor Conocimiento Canal' %}
                   <button type="button" class="btn btn-sm js-fidelity"
                           data-url="{{ url_for('api_check_fidelity', doc_id=d.id) }}"
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.fidelity_analysis_done else 'false' }}"
                           data-result='{{ (d.fidelity_analysis_result | tojson) if d.fidelity_analysis_result else "" }}'>{{ 'Ver Informe Fidelidad' if d.fidelity_analysis_done else 'Comprobar Fidelidad' }}</button>
                   {% endif %}
-                  {% if tab.status == 'En validación - Pte. Gestor Conocimiento' %}
+                  {% if tab.status == 'En validación - Pte. Gestor Conocimiento Base' %}
                   <button type="button" class="btn btn-sm js-duplicity"
                           data-url="{{ url_for('api_detect_duplicity', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.duplicity_analysis_done else 'false' }}"
@@ -154,22 +154,23 @@
     var buttons = document.querySelectorAll('.tab-btn');
     var panes = document.querySelectorAll('.tab-pane');
 
-    function activate(id) {
+    // Pestañas identificadas por slug: botón [data-tab="slug"] y panel #pane-slug; el hash de la URL es #slug.
+    function activate(slug) {
       var found = false;
       buttons.forEach(function (b) {
-        var on = b.dataset.target === id;
+        var on = b.dataset.tab === slug;
         found = found || on;
         b.classList.toggle('active', on);
         b.setAttribute('aria-selected', on ? 'true' : 'false');
       });
       if (!found) return;
-      panes.forEach(function (p) { p.classList.toggle('active', p.id === id); });
+      panes.forEach(function (p) { p.classList.toggle('active', p.id === 'pane-' + slug); });
     }
 
     buttons.forEach(function (b) {
       b.addEventListener('click', function () {
-        activate(b.dataset.target);
-        history.replaceState(null, '', '#' + b.dataset.target);
+        activate(b.dataset.tab);
+        history.replaceState(null, '', '#' + b.dataset.tab);
       });
     });
 
@@ -424,7 +425,7 @@
             setTimeout(function () {
               tr.remove();
               if (detail) detail.remove();
-              var counter = document.querySelector('[data-target="' + pane.id + '"] .tab-count');
+              var counter = document.querySelector('[data-tab="' + pane.id.replace('pane-', '') + '"] .tab-count');
               if (counter) counter.textContent = Math.max(0, (parseInt(counter.textContent, 10) || 0) - 1);
               if (!tbody.querySelector('tr')) { // la pestaña se queda sin documentos
                 var empty = document.createElement('tr');
