@@ -98,7 +98,7 @@ def _annotate_with_margin_boxes(original_pdf_path: str, output_pdf_path: str,
                     continue
                 highlight = page.add_highlight_annot(quads)
                 highlight.set_colors(stroke=HIGHLIGHT_COLOR)
-                highlight.set_info(title="Auditoría IA")
+                highlight.set_info(title="Auditoria IA")
                 highlight.update()
                 if item["page_number"] is not None:
                     continue  # recuadro solo en la primera aparición
@@ -138,7 +138,7 @@ def annotate_pdf_with_ai_results(original_pdf_path: str, output_pdf_path: str,
     """Auditorías normativa y de fidelidad: el recuadro lleva las fuentes y la explicación."""
     def text(item):
         infringed = item.get("texto_infrinjido") or item.get("normativa_infringida") or ""
-        return f"FUENTES / NORMATIVA:\n{infringed}\n\nEXPLICACIÓN:\n{item.get('explicacion') or ''}"
+        return f"FONTS / NORMATIVA:\n{infringed}\n\nEXPLICACIÓ:\n{item.get('explicacion') or ''}"
     return _annotate_with_margin_boxes(original_pdf_path, output_pdf_path, incoherencias_list, text)
 
 
@@ -146,5 +146,5 @@ def annotate_referente_pdf(original_pdf_path: str, output_pdf_path: str,
                            incoherencias_list: list) -> tuple:
     """Auditoría de claridad (Referente departamental): el recuadro lleva explicación y propuesta."""
     def text(item):
-        return f"EXPLICACIÓN:\n{item.get('explicacion') or ''}\n\nPROPUESTA:\n{item.get('propuesta') or ''}"
+        return f"EXPLICACIÓ:\n{item.get('explicacion') or ''}\n\nPROPOSTA:\n{item.get('propuesta') or ''}"
     return _annotate_with_margin_boxes(original_pdf_path, output_pdf_path, incoherencias_list, text)

@@ -10,10 +10,10 @@ BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 # Interruptor único: ignora la comparación Padre-Hijo (Base y su Adaptado derivado).
 # Los hermanos (Adaptados entre sí) siempre se comparan.
 EXCLUDE_PARENT_CHILD_DUPLICITY = True  # Cambiar a False para desactivar este filtro en pruebas
-PUBLISHED_STATUS = "Publicada"  # solo se compara contra documentos publicados
+PUBLISHED_STATUS = "Publicat"  # solo se compara contra documentos publicados
 DEFAULTS = {"simhash_max_distance": 3, "vector_similarity_threshold": 0.85}
-NO_DUPLICITY = ("No se han detectado duplicidades ni coincidencias relevantes con otros "
-                "documentos de la base de conocimiento.")
+NO_DUPLICITY = ("No s'han detectat duplicitats ni coincidències rellevants amb altres "
+                "documents de la base de coneixement.")
 
 log = logging.getLogger(__name__)
 
@@ -37,8 +37,8 @@ def compute_centroid(vectors_list):
 
 
 def _sources(doc: dict) -> list:
-    """Fuentes de un documento (`source` o `fuente_original`) siempre como lista."""
-    src = doc.get("unidades_base_origen") or doc.get("source") or doc.get("fuente_original") or []
+    """Fuentes de un documento (`unidades_base_origen`) siempre como lista."""
+    src = doc.get("unidades_base_origen") or []
     return src if isinstance(src, list) else [src]
 
 
@@ -48,10 +48,10 @@ def is_parent_child_relationship(doc_a: dict, doc_b: dict) -> bool:
         return False
     a_type, b_type = doc_a.get("content_type"), doc_b.get("content_type")
     # CASO 1: A es Base y B es un Adaptado que lo cita como fuente.
-    if a_type == "Base" and b_type == "Adaptado" and doc_a.get("id") in _sources(doc_b):
+    if a_type == "Base" and b_type == "Adaptat" and doc_a.get("id") in _sources(doc_b):
         return True
     # CASO 2: A es Adaptado y B es el Base que cita como fuente.
-    if a_type == "Adaptado" and b_type == "Base" and doc_b.get("id") in _sources(doc_a):
+    if a_type == "Adaptat" and b_type == "Base" and doc_b.get("id") in _sources(doc_a):
         return True
     return False  # incluye Adaptado vs Adaptado (hermanos): se comparan con normalidad
 
@@ -79,7 +79,7 @@ def _load_centroid(path: str):
 
 
 def _label(doc) -> str:
-    return f"«{doc.get('title', '(sin título)')}» (ID: {doc['id']})"
+    return f"«{doc.get('title', '(sense títol)')}» (ID: {doc['id']})"
 
 
 def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vectores",
@@ -87,7 +87,7 @@ def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vector
     """Busca duplicidades del documento `target_doc_id` frente al resto. Devuelve un texto Markdown."""
     target = next((d for d in documents_data if d.get("id") == target_doc_id), None)
     if target is None:
-        return "No se encontró el documento a analizar."
+        return "No s'ha trobat el document a analitzar."
     others = [d for d in documents_data
               if d.get("id") != target_doc_id and d.get("status") == PUBLISHED_STATUS]
     config = _load_config(config_path)
@@ -96,7 +96,7 @@ def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vector
     vdir = vectors_dir if os.path.isabs(vectors_dir) else os.path.join(BASE_DIR, vectors_dir)
     notes = []
     if not others:
-        notes.append("No hay otros documentos publicados con los que comparar.")
+        notes.append("No hi ha altres documents publicats amb els quals comparar.")
 
     # PASO 1: SimHash (coincidencia exacta o casi exacta).
     if target.get("simhash"):
@@ -115,20 +115,20 @@ def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vector
                 matches.append((dist, d))
         if matches:
             matches.sort(key=lambda m: m[0])
-            lines = ["### Duplicidad detectada (SimHash)"]
+            lines = ["### Duplicitat detectada (SimHash)"]
             for n, (dist, d) in enumerate(matches, 1):
-                lines += [f"**{n}. Coincidencia exacta o casi exacta con {_label(d)}**",
-                          f"- **Distancia Hamming:** {dist} (umbral: {max_distance})",
-                          f"- **Estado del documento en conflicto:** {d.get('status', '—')}"]
+                lines += [f"**{n}. Coincidència exacta o gairebé exacta amb {_label(d)}**",
+                          f"- **Distància de Hamming:** {dist} (llindar: {max_distance})",
+                          f"- **Estat del document en conflicte:** {d.get('status', '—')}"]
             return "\n".join(lines)
     else:
-        notes.append("El documento no tiene huella SimHash; se omitió la comparación exacta.")
+        notes.append("El document no té empremta SimHash; s'ha omès la comparació exacta.")
 
     # PASO 2: similitud vectorial entre centroides.
     target_centroid = _load_centroid(os.path.join(vdir, f"{target_doc_id}_vectors.json"))
     if target_centroid is None:
-        notes.append("El documento no tiene archivo de vectores utilizable; "
-                     "se omitió la comparación semántica.")
+        notes.append("El document no té fitxer de vectors utilitzable; "
+                     "s'ha omès la comparació semàntica.")
     else:
         similar, skipped = [], 0
         for d in others:
@@ -149,17 +149,17 @@ def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vector
             if sim > threshold:
                 similar.append((sim, d))
         if skipped:
-            notes.append(f"{skipped} documento(s) no se compararon por no tener vectores utilizables.")
+            notes.append(f"{skipped} document(s) no s'han comparat perquè no tenen vectors utilitzables.")
         if similar:
             similar.sort(key=lambda m: m[0], reverse=True)
-            lines = ["### Contenido similar detectado (similitud semántica)"]
+            lines = ["### Contingut similar detectat (similitud semàntica)"]
             for n, (sim, d) in enumerate(similar, 1):
-                lines += [f"**{n}. Contenido similar a {_label(d)}**",
-                          f"- **Similitud:** {sim * 100:.0f}% (umbral: {threshold * 100:.0f}%)",
-                          f"- **Estado del documento en conflicto:** {d.get('status', '—')}"]
+                lines += [f"**{n}. Contingut similar a {_label(d)}**",
+                          f"- **Similitud:** {sim * 100:.0f}% (llindar: {threshold * 100:.0f}%)",
+                          f"- **Estat del document en conflicte:** {d.get('status', '—')}"]
             return "\n".join(lines + [""] + [f"> {n}" for n in notes] if notes else lines)
 
     if target.get("simhash") is None and target_centroid is None:
-        return ("No se pudo realizar la detección de duplicidades: el documento no tiene SimHash "
-                "ni vectores generados (revisa la API key de Gemini y vuelve a subirlo).")
+        return ("No s'ha pogut fer la detecció de duplicitats: el document no té SimHash "
+                "ni vectors generats (revisa l'API key de Gemini i torna a pujar-lo).")
     return NO_DUPLICITY + ("\n\n" + "\n".join(f"> {n}" for n in notes) if notes else "")

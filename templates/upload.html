@@ -1,37 +1,56 @@
 {% extends "base.html" %}
-{% block title %}Subir documento{% endblock %}
+{% block title %}{{ 'Crea una nova versió' if version_doc else 'Puja un document' }}{% endblock %}
 {% block content %}
 <main>
   <header class="page-header">
     <div>
-      <h1>Subir documento</h1>
-      <p>El documento entrará en el flujo en estado «En elaboración».</p>
+      <h1>{{ 'Crea una nova versió' if version_doc else 'Puja un document' }}</h1>
+      {% if version_doc %}
+      <p>Es crearà la versió {{ version_doc.version + 1 }} i el document tornarà a la safata del seu editor.</p>
+      {% else %}
+      <p>El document entrarà al flux en estat d'elaboració (Editor Departamental o Editor Canal segons el tipus).</p>
+      {% endif %}
     </div>
   </header>
 
   <section class="card">
     <form class="card-body" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+      <input type="hidden" name="origen" value="{{ origen }}">
+      {% if version_doc %}<input type="hidden" name="versionar_id" value="{{ version_doc.id }}">{% endif %}
       <div class="form-grid">
         <div class="field full">
-          <label for="file">Archivo</label>
-          <input id="file" name="file" type="file" required accept="{% for e in extensions %}.{{ e }}{% if not loop.last %},{% endif %}{% endfor %}">
-          <span class="hint">Formatos: {{ extensions | join(', ') }}. Máximo 16 MB.</span>
+          <label for="file">Fitxer</label>
+          <input id="file" name="file" type="file" {{ '' if version_doc else 'required' }} accept="{% for e in extensions %}.{{ e }}{% if not loop.last %},{% endif %}{% endfor %}">
+          <span class="hint">Formats: {{ extensions | join(', ') }}. Màxim 16 MB.</span>
+          {% if version_doc %}<p class="help-text hint">Fitxer actual: <strong>{{ version_doc.filename }}</strong>. Selecciona un fitxer nou només si el vols reemplaçar.</p>{% endif %}
         </div>
         <fieldset class="family-fieldset">
-          <legend class="family-legend">Identificación</legend>
+          <legend class="family-legend">Identificació</legend>
           <div class="form-grid">
             <div class="field full">
-              <label for="titulo">Título</label>
+              <label for="titulo">Títol</label>
               <input type="text" name="titulo" id="titulo" required value="{{ form.get('title', '') }}">
             </div>
             <div class="field">
-              <label for="tipo_contenido">Tipo de contenido</label>
-              <select name="tipo_contenido" id="tipo_contenido" required>
-                <option value="" disabled {{ 'selected' if not form.get('content_type') }}>Selecciona…</option>
-                {% for ct in content_types %}
-                <option value="{{ ct }}" {{ 'selected' if form.get('content_type') == ct }}>{{ ct }}</option>
+              <label for="tipo_contenido">Tipus de contingut</label>
+              <select name="tipo_contenido" id="tipo_contenido" required {{ 'disabled' if version_doc }}>
+                {% if version_doc %}
+                  {% set allowed_types = [version_doc.content_type] %}
+                {% elif origen == 'editor-canal' %}
+                  {% set allowed_types = ['Adaptat'] %}
+                {% elif origen == 'editor-departamental' %}
+                  {% set allowed_types = ['Base'] %}
+                {% else %}
+                  {% set allowed_types = content_types %}
+                {% endif %}
+                {% if allowed_types | length > 1 %}
+                <option value="" disabled {{ 'selected' if form.get('content_type') not in allowed_types }}>Selecciona…</option>
+                {% endif %}
+                {% for ct in allowed_types %}
+                <option value="{{ ct }}" {{ 'selected' if form.get('content_type') == ct or allowed_types | length == 1 }}>{{ ct }}</option>
                 {% endfor %}
               </select>
+              {% if version_doc %}<input type="hidden" name="tipo_contenido" value="{{ version_doc.content_type }}">{% endif %}
             </div>
             <div class="field">
               <label for="idioma">Idioma</label>
@@ -43,7 +62,7 @@
               </select>
             </div>
             <div class="field full">
-              <span class="label-text">Tipología <small>(selecciona al menos una)</small></span>
+              <span class="label-text">Tipologia <small>(selecciona'n almenys una)</small></span>
               <div class="tipologia-container" id="tipologia-container">
                 {% for name in tipologias %}
                 <label class="tipologia-item">
@@ -52,16 +71,16 @@
                 </label>
                 {% endfor %}
               </div>
-              <span class="field-error" id="tipologia-error" role="alert" hidden>Debes seleccionar al menos una opción en la Tipología.</span>
+              <span class="field-error" id="tipologia-error" role="alert" hidden>Has de seleccionar almenys una opció a la Tipologia.</span>
             </div>
             
           </div>
         </fieldset>
         <fieldset class="family-fieldset">
-          <legend class="family-legend">Origen y Trazabilidad</legend>
+          <legend class="family-legend">Origen i Traçabilitat</legend>
           <div class="form-grid">
             <div class="field full" id="container_departamento" hidden>
-              <span class="label-text">Departamento competente <small>(solo Base; selecciona al menos uno)</small></span>
+              <span class="label-text">Departament competent <small>(Base i Referenciat; selecciona'n almenys un)</small></span>
               <div class="tipologia-container" id="departamento-checks">
                 {% for dep in departments %}
                 <label class="tipologia-item">
@@ -70,32 +89,32 @@
                 </label>
                 {% endfor %}
               </div>
-              <span class="field-error" id="departamento-error" role="alert" hidden>Debes seleccionar al menos un departamento competente.</span>
+              <span class="field-error" id="departamento-error" role="alert" hidden>Has de seleccionar almenys un departament competent.</span>
             </div>
             <div class="field full" id="container_unidad_base" hidden>
-              <label for="unidades_base_origen">Unidad base origen <small>(solo Adaptado; documentos base publicados)</small></label>
+              <label for="unidades_base_origen">Unitat base d'origen <small>(només Adaptat; documents base publicats)</small></label>
               <select id="unidades_base_origen" name="unidades_base_origen" multiple size="{{ [base_docs | length, 3] | max if base_docs else 3 }}" disabled>
                 {% for d in base_docs %}
                 <option value="{{ d.id }}" data-taxonomy='{{ d.taxonomy | tojson }}'
                         {{ 'selected' if d.id in selected_sources }}>{{ d.title }} (v{{ d.version }})</option>
                 {% endfor %}
               </select>
-              <span class="hint">Mantén ⌘ (Mac) o Ctrl pulsado para seleccionar varias.</span>
-              <span class="field-error" id="source-empty" role="alert" hidden>No hay documentos base publicados disponibles para adaptar</span>
-              <span class="field-error" id="unidad-error" role="alert" hidden>Debes seleccionar al menos una unidad base de origen.</span>
+              <span class="hint">Mantén premut ⌘ (Mac) o Ctrl per seleccionar-ne diverses.</span>
+              <span class="field-error" id="source-empty" role="alert" hidden>No hi ha documents base publicats disponibles per adaptar</span>
+              <span class="field-error" id="unidad-error" role="alert" hidden>Has de seleccionar almenys una unitat base d'origen.</span>
             </div>
             <div class="field" id="container_canal" hidden>
-              <label for="canal">Canal <small>(solo Adaptado)</small></label>
+              <label for="canal">Canal <small>(només Adaptat)</small></label>
               <select name="canal" id="canal" disabled>
                 <option value="">Selecciona un canal...</option>
                 {% for c in canales %}
                 <option value="{{ c }}" {{ 'selected' if form.get('canal') == c }}>{{ c }}</option>
                 {% endfor %}
               </select>
-              <span class="field-error" id="canal-error" role="alert" hidden>Debes seleccionar un canal.</span>
+              <span class="field-error" id="canal-error" role="alert" hidden>Has de seleccionar un canal.</span>
             </div>
             <div class="field full" id="container_relacionados">
-              <span class="label-text">Contenidos relacionados <small>(opcional; documentos publicados)</small></span>
+              <span class="label-text">Continguts relacionats <small>(opcional; documents publicats)</small></span>
               {% if published_docs %}
               <div class="tipologia-container">
                 {% for d in published_docs %}
@@ -106,13 +125,13 @@
                 {% endfor %}
               </div>
               {% else %}
-              <em class="hint">No hay documentos publicados disponibles</em>
+              <em class="hint">No hi ha documents publicats disponibles</em>
               {% endif %}
             </div>
           </div>
         </fieldset>
         <div class="field full" id="field-taxonomy" hidden>
-          <label for="taxonomy">Taxonomía (N1 &gt; N2 &gt; N3)</label>
+          <label for="taxonomy">Taxonomia (N1 &gt; N2 &gt; N3)</label>
           <select id="taxonomy" name="taxonomy" required disabled>
             <option value="" disabled {{ 'selected' if not form.get('taxonomy') }}>Selecciona…</option>
             {% for t in taxonomies %}
@@ -121,18 +140,19 @@
           </select>
         </div>
         <div class="field full" id="field-inherited" hidden>
-          <label for="inherited-taxonomy">Taxonomía heredada</label>
-          <textarea id="inherited-taxonomy" class="readonly" rows="2" readonly placeholder="Se completará al seleccionar las fuentes originales"></textarea>
-          <span class="hint">Unión (sin duplicados) de las taxonomías de las fuentes seleccionadas. No es editable.</span>
-        </div>
-        <div class="field">
-          <label for="date">Fecha</label>
-          <input id="date" name="date" type="date" required value="{{ form.get('date') or today }}">
+          <label for="inherited-taxonomy">Taxonomia heretada</label>
+          <textarea id="inherited-taxonomy" class="readonly" rows="2" readonly placeholder="S'emplenarà en seleccionar les fonts originals"></textarea>
+          <span class="hint">Unió (sense duplicats) de les taxonomies de les fonts seleccionades. No és editable.</span>
         </div>
       </div>
       <div class="form-actions">
-        <a class="btn" href="{{ url_for('dashboard') }}">Cancelar</a>
-        <button type="submit" class="btn btn-primary">Subir e iniciar flujo</button>
+        {% if version_doc %}
+        <a href="{{ url_for('dashboard') }}#publicats" class="btn btn-outline-secondary" style="margin-left: 10px;">Cancel·la</a>
+        <button type="submit" class="btn btn-primary">Desa la nova versió</button>
+        {% else %}
+        <a class="btn" href="{{ url_for('dashboard') }}">Cancel·la</a>
+        <button type="submit" class="btn btn-primary">Puja i inicia el flux</button>
+        {% endif %}
       </div>
     </form>
   </section>
@@ -173,8 +193,8 @@
 
     // Visibilidad según el tipo de contenido: un campo oculto se deshabilita (ni se envía ni se valida).
     function update() {
-      var base = type.value === 'Base';
-      var adapted = type.value === 'Adaptado';
+      var base = type.value === 'Base' || type.value === 'Referenciat';  // Referenciat es tracta com Base
+      var adapted = type.value === 'Adaptat';
 
       show(taxGroup, base);
       tax.disabled = !base;
@@ -182,7 +202,7 @@
       show(depGroup, base);               // Base: al menos una casilla (se valida en el submit)
       depChecks.forEach(function (c) { c.disabled = !base; });
 
-      show(srcGroup, adapted);            // Adaptado: unidad base y canal obligatorios
+      show(srcGroup, adapted);            // Adaptat: unidad base y canal obligatorios
       src.disabled = !adapted;
       src.required = adapted && src.options.length > 0;
       show(canalGroup, adapted);
@@ -208,12 +228,12 @@
         setError('tipologia-error', true, document.getElementById('tipologia-container'));
         problems.push('tipologia');
       }
-      if (type.value === 'Base' &&
+      if ((type.value === 'Base' || type.value === 'Referenciat') &&
           document.querySelectorAll('input[name="departamentos_competentes"]:checked').length === 0) {
         setError('departamento-error', true, document.getElementById('departamento-checks'));
         problems.push('departamento');
       }
-      if (type.value === 'Adaptado') {
+      if (type.value === 'Adaptat') {
         if (src.selectedOptions.length === 0) { setError('unidad-error', true); problems.push('unidad'); }
         if (!canal.value) { setError('canal-error', true); problems.push('canal'); }
       }

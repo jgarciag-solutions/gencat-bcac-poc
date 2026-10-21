@@ -110,7 +110,11 @@ main { width: 100%; max-width: 1280px; margin: 0 auto; padding: 32px; }
 .btn-success:hover { background: #116632; border-color: #116632; color: #fff; }
 .btn-danger { background: var(--color-danger-soft); border-color: var(--color-danger); color: var(--color-danger); }
 .btn-danger:hover { background: var(--color-danger); border-color: var(--color-danger); color: #fff; }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Botones de la columna «Accions»: una columna, todos con el ancho de la celda y la misma altura
+   (filas 1fr); los <form> no cuentan como caja para que su botón sea un elemento más de la rejilla. */
+.actions { display: grid; grid-template-columns: 1fr; grid-auto-rows: 1fr; gap: 8px; }
+.actions form { display: contents; }
+.actions .btn { width: 100%; min-height: 34px; white-space: normal; text-align: center; } /* el texto se parte en lugar de desbordar la tabla */
 
 /* Observaciones de rechazo y modal */
 .obs-alert { margin-top: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--color-danger); background: var(--color-danger-soft); color: var(--color-danger); font-size: 12px; max-width: 360px; }
@@ -130,7 +134,7 @@ textarea { resize: vertical; }
 /* Tabla */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
-th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--color-border); vertical-align: top; min-width: 120px; white-space: normal; overflow-wrap: break-word; word-break: normal; }
+th, td { padding: 12px 10px; text-align: left; border-bottom: 1px solid var(--color-border); vertical-align: top; white-space: normal; overflow-wrap: break-word; word-break: normal; }
 th { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--color-muted); background: #fafafa; }
 tbody tr:hover { background: var(--color-primary-soft); }
 tbody tr:last-child td { border-bottom: none; }
@@ -140,12 +144,13 @@ td small { color: var(--color-muted); display: block; }
 
 /* Badges por estado */
 .badge { display: inline-block; padding: 4px 12px; border-radius: var(--radius-pill); font-size: 12px; font-weight: 700; white-space: nowrap; }
-.badge-1 { background: var(--color-warning-soft); color: var(--color-warning); }
-.badge-2 { background: #fff7d6; color: #8a6d00; }
-.badge-3 { background: var(--color-primary-soft); color: var(--color-primary); }
-.badge-4 { background: #efe9fb; color: #5b34a8; }
-.badge-5 { background: var(--color-success-soft); color: var(--color-success); }
-.badge-6 { background: #eceff3; color: var(--color-muted); }
+.badge-1 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Editor Dep: Slate */
+.badge-2 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Editor Canal: Slate oscuro */
+.badge-3 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Referente Dep: Ámbar */
+.badge-4 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Validador Fin: Azul */
+.badge-5 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Gestor Base: Violeta */
+.badge-6 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Gestor Canal: Teal */
+.badge-7 { background: #c80000; color: #fffdfd; border: 1px solid #c80000; } /* Publicada: Verde */
 
 /* Formularios */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }

@@ -5,53 +5,49 @@ from .runner import run_agent
 from .tools import read_multiple_pdfs, read_pdf
 
 INSTRUCTIONS = """
-Eres un Agente Auditor de Fidelidad Documental en la Gobernanza del Conocimiento.
-Tu función es comparar un 'Documento Adaptado' con sus 'Documentos Fuente Originales' y verificar que la adaptación mantenga absoluta fidelidad al contenido original, sin alterar reglas, cifras, hechos ni introduciendo contradicciones o invenciones.
+Ets un Agent Auditor de Fidelitat Documental en la Governança del Coneixement.
+La teva funció és comparar un 'Document Adaptat' amb els seus 'Documents Font Originals' i verificar que l'adaptació mantingui una fidelitat absoluta al contingut original, sense alterar regles, xifres ni fets, i sense introduir contradiccions ni invencions.
+Tots els documents (l'adaptat i les fonts) estan escrits en català.
 
-REGLAS:
-1. Usa 'read_pdf' para leer el documento adaptado y 'read_multiple_pdfs' para leer los documentos fuente originales.
-2. Si la adaptación es totalmente fiel y no presenta incoherencias ni alteraciones de contenido respecto a las fuentes, responde EXACTAMENTE con esta frase:
-   "Análisis completado: El documento adaptado es totalmente fiel a las fuentes originales y no presenta incoherencias."
-3. Si detectas fallos de fidelidad, incoherencias, datos alterados o contradicciones, genera una lista estricta en Markdown indicando explícitamente qué documento fuente fue afectado:
+REGLES:
+1. Fes servir 'read_pdf' per llegir el document adaptat i 'read_multiple_pdfs' per llegir els documents font originals.
+2. Compara el document adaptat amb les fonts originals cercant manques de fidelitat, incoherències o alteracions.
+3. Retorna la resposta respectant estrictament una de les dues estructures JSON segons el resultat.
 
-### Incoherències i Manques de Fidelitat Detectades
-**1. [Breu títol de la incoherència]**
-- **Frase al document adaptat:** "[Cita textual]"
-- **Document Font Afectat:** [Nom o ID del document base]
-- **Text original a la font:** "[Cita textual del document base]"
-- **Motiu:** [Explicació concisa de per què hi ha falta de fidelitat o contradicció]
-"""
+REGLES DE SORTIDA:
+- La teva resposta ha de ser EXCLUSIVAMENT un objecte JSON vàlid: sense markdown (NO facis servir ```json ni ```) i sense text previ ni posterior.
+- Tots els textos dels valors del JSON han d'estar redactats en CATALÀ. Els noms de les claus del JSON NO es tradueixen (inclosos 'fiel', 'mensaje' i 'incoherencias'): han de ser exactament els de l'esquema.
+- 'frase_analizada' i 'texto_infrinjido' han de ser cites LITERALS i curtes (una sola frase) copiades tal com apareixen als documents, sense traduir, sense reformular i sense punts suspensius. 'frase_analizada' es cerca després al PDF.
 
-INSTRUCTIONS = """
-Eres un Agente Auditor de Fidelidad Documental en la Gobernanza del Conocimiento.
-Tu función es comparar un 'Documento Adaptado' con sus 'Documentos Fuente Originales' y verificar que la adaptación mantenga absoluta fidelidad al contenido original, sin alterar reglas, cifras, hechos ni introduciendo contradicciones o invenciones.
-Tus respuestas deben ser ÚNICAMENTE un objeto JSON válido (sin texto explicativo adicional fuera del JSON).
+ESQUEMA JSON OBLIGATORI:
 
-REGLAS:
-1. Usa 'read_pdf' para leer el documento adaptado y 'read_multiple_pdfs' para leer los documentos fuente originales.
-2. Compara el documento adaptado con las fuentes originales buscando faltas de fidelidad, incoherencias o alteraciones.
-3. Devuelve la respuesta respetando estrictamente una de las dos estructuras JSON según el resultado:
-
-A) Si la adaptación es totalmente fiel y no presenta incoherencias ni alteraciones:
+A) Si l'adaptació és totalment fidel i no presenta incoherències ni alteracions:
 {
   "fiel": true,
-  "mensaje": "Análisis completado: El documento adaptado es totalmente fiel a las fuentes originales y no presenta incoherencias.",
+  "mensaje": "Anàlisi completada: El document adaptat és totalment fidel a les fonts originals i no presenta incoherències.",
   "incoherencias": []
 }
 
-B) Si detectas fallos de fidelidad, incoherencias, datos alterados o contradicciones:
+B) Si detectes errors de fidelitat, incoherències, dades alterades o contradiccions:
 {
   "fiel": false,
-  "mensaje": "Se han detectado incoherencias o faltas de fidelidad respecto a las fuentes.",
+  "mensaje": "S'han detectat incoherències o manques de fidelitat respecte a les fonts.",
   "incoherencias": [
     {
-      "titulo": "[Breve título de la incoherencia]",
-      "frase_analizada": "[Cita textual]",
-      "texto_infrinjido": "[Nombre o ID del documento base] - [Cita textual del documento base]",
-      "fichero_fuente": "[Nombre exacto o ID del PDF base original, tal como aparece en la cabecera '===== DOCUMENTO FUENTE: ... =====']",
-      "explicacion": "[Explicación concisa de por qué hay falta de fidelidad o contradicción]"
+      "titulo": "[Breu títol de la incoherència]",
+      "frase_analizada": "[Cita textual del document adaptat]",
+      "texto_infrinjido": "[Nom o ID del document base] - [Cita textual del document base]",
+      "fichero_fuente": "[Nom exacte o ID del PDF base original, tal com apareix a la capçalera '===== DOCUMENTO FUENTE: ... =====']",
+      "explicacion": "[Explicació concisa de per què hi ha manca de fidelitat o contradicció]"
     }
   ]
+}
+
+En cas d'error en llegir algun dels documents, retorna:
+{
+  "fiel": false,
+  "mensaje": "Error en la lectura del document adaptat o de les fonts.",
+  "incoherencias": []
 }
 """
 
@@ -64,8 +60,8 @@ fidelity_agent = LlmAgent(
 
 
 def run_fidelity_check(adapted_pdf_path: str, source_pdf_paths: list[str]) -> str:
-    """Compara el PDF adaptado con sus fuentes y devuelve el informe del agente (Markdown)."""
+    """Compara el PDF adaptado con sus fuentes y devuelve el informe del agente (JSON en texto)."""
     sources = "\n".join(f"- {p}" for p in source_pdf_paths)
-    prompt = (f"Documento adaptado (léelo con read_pdf): {adapted_pdf_path}\n"
-              f"Documentos fuente originales (léelos con read_multiple_pdfs, pasando esta lista de rutas):\n{sources}")
+    prompt = (f"Document adaptat (llegeix-lo amb read_pdf): {adapted_pdf_path}\n"
+              f"Documents font originals (llegeix-los amb read_multiple_pdfs, passant aquesta llista de rutes):\n{sources}")
     return run_agent(fidelity_agent, prompt)

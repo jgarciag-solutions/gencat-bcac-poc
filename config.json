@@ -5,9 +5,15 @@
   "simhash_max_distance": 3,
   "vector_similarity_threshold": 0.95,
   "departamentos_competentes": [
-    "Derechos Sociales y Familias",
-    "Economía y Hacienda",
-    "Territorio y Vivienda",
-    "Atención Ciudadana"
-  ]
+    "Drets Socials i Inclusio",
+    "Igualtat i Feminisme",
+    "Empresa i Treball",
+    "Justicia i Qualitat Democratica",
+    "Cultura",
+    "Salut", 
+    "interiro i Securitat Publica",
+    "Presidencia",
+    "Esports"
+  ],
+  "dias_revision_prevista": 150
 }

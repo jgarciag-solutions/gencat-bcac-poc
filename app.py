@@ -4,7 +4,7 @@ import os
 import re
 import threading
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from functools import wraps
 
 from dotenv import load_dotenv
@@ -38,90 +38,99 @@ USERS = {
     "admin": {"password": "gencat", "name": "Administrador", "role": "Administrador"},
 }
 
-S_ELAB = "En elaboración"
-S_UF = "En validación - Pte. Unidad Finalista"
-S_GCB = "En validación - Pte. Gestor Conocimiento Base"
-S_GCC = "En validación - Pte. Gestor Conocimiento Canal"
-S_PUB = "Publicada"
-STATES = [S_ELAB, S_UF, S_GCB, S_GCC, S_PUB]
+S_ED = "En elaboració - Editor Departamental"
+S_EC = "En elaboració - Editor Canal"
+S_RD = "En validació - Pdt. Referent Departamental"
+S_UF = "En validació - Pdt. Unitat Finalista"
+S_GCB = "En validació - Pdt. Gestor Coneixement Base"
+S_GCC = "En validació - Pdt. Gestor Coneixement Canal"
+S_PUB = "Publicat"
+STATES = [S_ED, S_EC, S_RD, S_UF, S_GCB, S_GCC, S_PUB]
 
-CONTENT_TYPES = ["Base", "Adaptado", "Referenciado"]
+CONTENT_TYPES = ["Base", "Adaptat", "Referenciat"]
 
 # Flujo secuencial según el tipo de contenido (Modelo de Contenidos).
 FLOWS = {
-    "Base": [S_ELAB, S_UF, S_GCB, S_PUB],
-    "Adaptado": [S_ELAB, S_GCC, S_PUB],
+    "Base": [S_ED, S_RD, S_UF, S_GCB, S_PUB],
+    "Referenciat": [S_ED, S_RD, S_UF, S_GCB, S_PUB],
+    "Adaptat": [S_EC, S_GCC, S_PUB],
 }
 
 # Estados de validación: aquí se puede aprobar o rechazar.
-VALIDATION_STATES = {S_UF, S_GCB, S_GCC}
+VALIDATION_STATES = {S_RD, S_UF, S_GCB, S_GCC}
 
 # Pestañas del dashboard: cada rol ve los documentos en su micro-estado.
 TABS = [
-    {"role": "Referente Departamental", "slug": "referente-departamental", "status": S_ELAB},
+    {"role": "Editor Departamental", "slug": "editor-departamental", "status": S_ED},
+    {"role": "Editor Canal", "slug": "editor-canal", "status": S_EC},
+    {"role": "Referent Departamental", "slug": "referent-departamental", "status": S_RD},
     {"role": "Validador Finalista", "slug": "validador-finalista", "status": S_UF},
-    {"role": "Gestor Conocimiento Base", "slug": "gestor-conocimiento-base", "status": S_GCB},
-    {"role": "Gestor Conocimiento Canal", "slug": "gestor-conocimiento-canal", "status": S_GCC},
-    {"role": "Publicados", "slug": "publicados", "status": S_PUB},
+    {"role": "Gestor Coneixement Base", "slug": "gestor-coneixement-base", "status": S_GCB},
+    {"role": "Gestor Coneixement Canal", "slug": "gestor-coneixement-canal", "status": S_GCC},
+    {"role": "Publicats", "slug": "publicats", "status": S_PUB},
 ]
 
 ACTION_LABEL = {
-    S_ELAB: "Enviar a validación",
-    S_UF: "Aprobar",
-    S_GCB: "Aprobar",
-    S_GCC: "Aprobar",
+    S_ED: "Aprovar",
+    S_EC: "Aprovar",
+    S_RD: "Aprovar",
+    S_UF: "Aprovar",
+    S_GCB: "Aprovar",
+    S_GCC: "Aprovar",
 }
 
-# Estados del modelo anterior -> micro-estados actuales (migración al leer el JSON).
-LEGACY_STATUS = {
-    "1. Pendiente Supervisión": S_ELAB,
-    "2. Pendiente Validación Base": S_UF,
-    "3. Pendiente Revisión GC": S_GCB,
-    "4. Pendiente Adaptación Canal": S_GCC,
-    "5. Publicado": S_PUB,
-    # nombres de los roles antes de la sincronización de terminología
-    "En validación - Pte. Gestor Conocimiento": S_GCB,
-    "En validación - Pte. Responsable Canal": S_GCC,
-}
-
-# Responsables con el nombre antiguo -> nuevo (se migran al leer el JSON).
-LEGACY_RESPONSABLE = {
-    "Gestor del Conocimiento": "Gestor Conocimiento Base",
-    "Responsable de canal": "Gestor Conocimiento Canal",
-    "Responsable de Canal": "Gestor Conocimiento Canal",
-}
+# Estado inicial / destino de devolución según el tipo de contenido.
+EDITOR_STATE = {"Base": S_ED, "Referenciat": S_ED, "Adaptat": S_EC}
 
 TAXONOMY = {
-    "Trámites": {
-        "Familia": ["Familia Numerosa", "Familia Monoparental", "Ayudas por hijo"],
-        "Vivienda": ["Ayudas al alquiler", "Cédula de habitabilidad"],
-    },
-    "Fiscalidad": {
-        "Tributos": ["Tasas", "IRPF autonómico"],
-    },
+    "Societat i ciutadania": {
+        "Families": ["Titol Família Nombrosa", "Titol Família Monoparental", "Registre de parelles estables", "Formacion per a pares i mares", "Avantages per famillies nombroses i monoparentals", "Acompanyament des familles (SOAF)","Autorització viatges menors no acompanyats" ],
+        "Dones": ["Equitat mesntrual", "Servesi i programes per a dones", "Violencia masclista"]
+    }
 }
 
-IDIOMAS = ["Catalán", "Español"]
+IDIOMAS = ["Català", "Castellà"]
 TIPOLOGIAS = [
-    "Descripción del trámite o servicio",
-    "Manual de tramitación",
-    "Guia de la atencion",
-    "Respuesta tipo",
-    "Aviso",
-    "Datos de apoyo",
-    "Fuente externa referenciada",
+    "Descripció del tràmit o servei",
+    "Manual de tramitació",
+    "Guia de l'atenció",
+    "Resposta tipus",
+    "Avís",
+    "Dades de suport",
+    "Font externa referenciada",
 ]
 
-CANALES = ["WEB", "Redes", "Presencial", "012"]
+CANALES = ["WEB", "Xarxes", "Presencial", "012"]
 
 DEPARTMENTS = [
-    "Derechos Sociales y Familias",
-    "Economía y Hacienda",
-    "Territorio y Vivienda",
-    "Atención Ciudadana",
+    "Drets Socials i Inclusio",
+    "Igualtat i Feminisme",
+    "Empresa i Treball",
+    "Justicia i Qualitat Democratica",
+    "Cultura",
+    "Salut", 
+    "interiro i Securitat Publica",
+    "Presidencia",
+    "Esports"
 ]
 
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
+
+
+DIAS_REVISION_DEFECTO = 150
+
+
+def dias_revision_prevista():
+    """Días entre la publicación y la revisión prevista (config.json); se relee en cada uso."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as fh:
+            days = json.load(fh).get("dias_revision_prevista")
+        if isinstance(days, int) and not isinstance(days, bool) and days >= 0:
+            return days
+    except (OSError, ValueError):
+        pass
+    app.logger.warning("dias_revision_prevista no válido en config.json; se usan %d días.", DIAS_REVISION_DEFECTO)
+    return DIAS_REVISION_DEFECTO
 
 
 def departamentos_competentes():
@@ -138,8 +147,8 @@ def departamentos_competentes():
 
 # --------------------------------------------------------------------------
 # Persistencia en uploads/documents.json
-# Campos de cada registro: id, filename, title, taxonomy, source, department,
-# date, status, updated_by. Los archivos de uploads/ que no figuren aquí se ignoran.
+# Cada registro es un diccionario plano (ver normalize() para la lista de campos).
+# Los archivos de uploads/ que no figuren aquí se ignoran.
 # --------------------------------------------------------------------------
 def ensure_documents_file():
     """Crea documents.json como lista vacía si no existe."""
@@ -156,23 +165,17 @@ def write_json(docs):
 
 
 def normalize(doc):
-    """Completa los campos nuevos y migra estados antiguos de registros previos."""
-    doc["status"] = LEGACY_STATUS.get(doc.get("status"), doc.get("status"))
-    if "estado" in doc:  # el campo informativo `estado` sigue a `status`
-        doc["estado"] = doc["status"]
-    if doc.get("responsable") in LEGACY_RESPONSABLE:
-        doc["responsable"] = LEGACY_RESPONSABLE[doc["responsable"]]
-    tax = doc.get("taxonomy")
-    doc["taxonomy"] = [tax] if isinstance(tax, str) and tax else (tax if isinstance(tax, list) else [])
+    """Completa con valores por defecto los campos que falten en un registro."""
     doc.setdefault("content_type", "Base")
     doc.setdefault("idioma", None)
     doc.setdefault("tipologia", [])
-    # Origen y trazabilidad (en la raíz del registro). Se migran los campos antiguos `source` y `department`.
-    legacy_source = doc.pop("source", None)
-    doc.setdefault("unidades_base_origen", legacy_source if isinstance(legacy_source, list) else [])
-    legacy_dep = doc.get("department")
-    doc.setdefault("departamentos_competentes", [legacy_dep] if isinstance(legacy_dep, str) and legacy_dep else [])
+    doc.setdefault("taxonomy", [])
+    # Origen y trazabilidad (en la raíz del registro).
+    doc.setdefault("unidades_base_origen", [])
+    doc.setdefault("departamentos_competentes", [])
     doc.setdefault("canal", "")
+    doc.setdefault("fecha_publicacion", None)
+    doc.setdefault("fecha_revision_prevista", None)
     doc.setdefault("contenidos_relacionados", [])
     doc.setdefault("version", 1)
     doc.setdefault("observations", "")
@@ -232,7 +235,7 @@ def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
         if current_user() is None:
-            flash("Debes iniciar sesión para continuar.", "warning")
+            flash("Has d'iniciar sessió per continuar.", "warning")
             return redirect(url_for("login"))
         return view(*args, **kwargs)
     return wrapped
@@ -242,12 +245,17 @@ def find_doc(docs, doc_id):
     return next((d for d in docs if d["id"] == doc_id), None)
 
 
-def filename_exists(filename, docs):
-    """Duplicado por nombre en documents.json o en la carpeta uploads/ (sin distinguir mayúsculas)."""
+def filename_exists(filename, docs, exclude_id=None):
+    """Duplicado por nombre en documents.json o en la carpeta uploads/ (sin distinguir mayúsculas).
+
+    `exclude_id`: documento que se está versionando; su propio archivo no cuenta como duplicado
+    (permite volver a subir un archivo con el mismo nombre).
+    """
     name = filename.lower()
-    if any(str(d.get("filename", "")).lower() == name for d in docs):
+    own = next((str(d.get("filename", "")).lower() for d in docs if d["id"] == exclude_id), None)
+    if any(str(d.get("filename", "")).lower() == name for d in docs if d["id"] != exclude_id):
         return True
-    return any(f.lower() == name for f in os.listdir(UPLOAD_FOLDER))
+    return any(f.lower() == name and f.lower() != own for f in os.listdir(UPLOAD_FOLDER))
 
 
 def next_status(doc):
@@ -272,20 +280,12 @@ def published_base_docs(docs):
     return [d for d in docs if d["status"] == S_PUB and d["content_type"] == "Base"]
 
 
-def source_titles(doc, titles):
-    """Fuente original legible: títulos de los documentos origen (o texto libre en registros antiguos)."""
-    src = doc.get("unidades_base_origen")
-    if isinstance(src, list):
-        return [titles.get(i, i) for i in src]
-    return [src] if src else []
-
-
 def clean_and_parse_json(llm_response: str) -> dict:
     """Parsea la respuesta JSON de un agente, tolerando vallas Markdown accidentales.
 
     Devuelve el diccionario, o {"error": True, "mensaje": ...} si no es JSON válido.
     """
-    error = {"error": True, "mensaje": "Fallo al procesar la respuesta de la IA."}
+    error = {"error": True, "mensaje": "Error en processar la resposta de la IA."}
     cleaned = re.sub(r"```json|```", "", llm_response or "").strip()
     try:
         data = json.loads(cleaned)
@@ -302,9 +302,31 @@ def clean_and_parse_json(llm_response: str) -> dict:
     return data
 
 
+def reset_ai_analysis(doc):
+    """Reinicia todos los análisis de IA del documento."""
+    doc["analysis_done"] = False
+    doc["analysis_result"] = None
+    doc["referente_analysis_result"] = None
+    doc["normative_analysis_done"] = False
+    doc["normative_analysis_result"] = None
+    doc["duplicity_analysis_done"] = False
+    doc["duplicity_result"] = None
+    doc["fidelity_analysis_done"] = False
+    doc["fidelity_analysis_result"] = None
+
+
 def taxonomy_paths():
     return [f"{n1} > {n2} > {n3}"
             for n1, l2 in TAXONOMY.items() for n2, l3 in l2.items() for n3 in l3]
+
+
+@app.template_filter("fecha_es")
+def fecha_es(value):
+    """Fecha ISO (YYYY-MM-DD) -> DD-MM-YYYY para mostrarla; el JSON conserva el formato ISO."""
+    try:
+        return date.fromisoformat(value).strftime("%d-%m-%Y")
+    except (TypeError, ValueError):
+        return value or ""
 
 
 @app.context_processor
@@ -327,45 +349,37 @@ def login():
         if account and account["password"] == password:
             session.clear()
             session["username"] = username
-            flash(f"Bienvenido, {account['name']}.", "success")
+            flash(f"Benvingut/da, {account['name']}.", "success")
             return redirect(url_for("dashboard"))
-        flash("Credenciales incorrectas.", "error")
+        flash("Credencials incorrectes.", "error")
     return render_template("login.html")
 
 
 @app.route("/logout")
 def logout():
     session.clear()
-    flash("Sesión cerrada correctamente.", "success")
+    flash("Sessió tancada correctament.", "success")
     return redirect(url_for("login"))
-
-
-def get_sort_date(d):
-    """Clave de ordenación tolerante: soporta el esquema nuevo y registros con campos antiguos."""
-    return (
-        d.get("fecha_publicacion_version")
-        or d.get("date")
-        or d.get("fecha")
-        or d.get("id", "")
-    )
 
 
 @app.route("/dashboard")
 @login_required
 def dashboard():
     docs = load_documents()
-    titles = {d["id"]: d["title"] for d in docs}
-    rows = [{**d, "department": ", ".join(d["departamentos_competentes"]) or d.get("department", ""),
-             "source_titles": source_titles(d, titles), "can_advance": can_advance(d),
+    rows = [{**d, "department": ", ".join(d["departamentos_competentes"]),
+             "can_advance": can_advance(d),
              "action": ACTION_LABEL.get(d["status"], ""),
              "badge": STATES.index(d["status"]) + 1 if d["status"] in STATES else 0}
             for d in docs]
-    rows.sort(key=get_sort_date, reverse=True)
+    # Más recientes primero: los registros se añaden al final del JSON y los publicados se ordenan por su fecha
+    # de publicación (el sort es estable, así que el resto conserva el orden inverso de alta).
+    rows.reverse()
+    rows.sort(key=lambda d: d.get("fecha_publicacion") or "", reverse=True)
     tabs = [{**t, "docs": [d for d in rows if d["status"] == t["status"]]} for t in TABS]
     return render_template("dashboard.html", tabs=tabs, validation_states=VALIDATION_STATES)
 
 
-def render_upload(form, selected_sources=(), selected_tipologia=(), selected_departments=(), selected_related=()):
+def render_upload(form, selected_sources=(), selected_tipologia=(), selected_departments=(), selected_related=(), origen="", version_doc=None):
     docs = load_documents()
     return render_template("upload.html", form=form, taxonomies=taxonomy_paths(),
                            departments=departamentos_competentes(), content_types=CONTENT_TYPES,
@@ -374,7 +388,89 @@ def render_upload(form, selected_sources=(), selected_tipologia=(), selected_dep
                            idiomas=IDIOMAS, tipologias=TIPOLOGIAS, selected_tipologia=list(selected_tipologia),
                            base_docs=published_base_docs(docs),
                            selected_sources=list(selected_sources),
-                           today=date.today().isoformat(), extensions=sorted(ALLOWED_EXTENSIONS))
+                           origen=origen, version_doc=version_doc, extensions=sorted(ALLOWED_EXTENSIONS))
+
+
+def save_new_version(doc_id, file, fields, user):
+    """Convierte un documento publicado en su nueva versión con los datos del formulario.
+
+    Si llega un archivo nuevo, sustituye al anterior (original, PDF anotados y vectores).
+    Devuelve la redirección al dashboard, o None si falla (el aviso ya se ha hecho con flash).
+    """
+    new_name = None
+    if file and file.filename:
+        new_name = secure_filename(file.filename)
+        if not new_name:
+            flash("El nom del fitxer no és vàlid.", "error")
+            return None
+    folder = app.config["UPLOAD_FOLDER"]
+    path = os.path.join(folder, new_name) if new_name else None
+
+    with DOCS_LOCK:  # reserva el nombre: tras guardar el archivo, otro upload igual se detecta
+        docs = load_documents()
+        doc = find_doc(docs, doc_id)
+        if doc is None or doc["status"] != S_PUB:
+            flash("Només es pot versionar un document publicat.", "error")
+            return None
+        if new_name:
+            if filename_exists(new_name, docs, exclude_id=doc_id):
+                flash("El fitxer ja s'ha pujat anteriorment", "warning")
+                return None
+            file.save(path)  # si se llama igual que el actual, lo sobrescribe
+
+    # SimHash y embeddings (red) fuera del bloqueo; nunca bloquea si fallan.
+    simhash, vector_file = process_document(path, doc_id) if new_name else (None, None)
+
+    def vector_path(vf):
+        return os.path.join(BASE_DIR, "vectores", os.path.basename(vf))
+
+    old_paths = []
+    with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante el procesado
+        docs = load_documents()
+        doc = find_doc(docs, doc_id)
+        if doc is None or doc["status"] != S_PUB:
+            if new_name and (doc is None or doc.get("filename") != new_name) and os.path.exists(path):
+                os.remove(path)
+            flash("El document ja no es pot versionar.", "error")
+            return None
+        if new_name:
+            old_name = doc.get("filename")
+            if old_name and old_name != new_name:
+                old_paths.append(os.path.join(folder, old_name))
+            old_paths += [os.path.join(folder, f"{doc_id}_annotated.pdf"),
+                          os.path.join(folder, f"{doc_id}_referente_annotated.pdf")]
+            # El vector nuevo se llama igual que el antiguo ({id}_vectors.json): solo se borra si no fue reemplazado.
+            if doc.get("vector_file") and doc["vector_file"] != vector_file:
+                old_paths.append(vector_path(doc["vector_file"]))
+            doc["filename"], doc["simhash"], doc["vector_file"] = new_name, simhash, vector_file
+        doc.update(fields)
+        doc["version"] = int(doc.get("version", 1)) + 1
+        doc["status"] = EDITOR_STATE[doc["content_type"]]
+        doc["observations"] = ""
+        doc["fecha_publicacion"] = doc["fecha_revision_prevista"] = None  # se rellenan al volver a publicar
+        reset_ai_analysis(doc)
+        doc["updated_by"] = user["username"]
+        try:
+            save_documents(docs)  # primero el registro: si falla, no se borra ningún archivo anterior
+        except OSError:
+            app.logger.exception("No se pudo guardar documents.json al versionar %s", doc_id)
+            flash("No s'ha pogut desar la nova versió. Torna-ho a provar.", "error")
+            return None
+        status, version = doc["status"], doc["version"]
+
+    for old in old_paths:
+        try:
+            os.remove(old)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            app.logger.exception("No se pudo eliminar %s", old)
+    if new_name and not vector_file:
+        flash(f"Nova versió {version} creada, però no s'han generat els vectors "
+              "(revisa l'API key o la quota de Gemini).", "warning")
+    else:
+        flash(f"Nova versió {version} creada: el document torna a «{status}».", "success")
+    return redirect(url_for("dashboard") + tab_anchor(status))
 
 
 @app.route("/upload", methods=["GET", "POST"])
@@ -385,11 +481,33 @@ def upload():
     selected_sources = []
     selected_tipologia = []
     selected_departments, selected_related = [], []
+    origen = (request.form.get("origen") if request.method == "POST" else request.args.get("origen", "")) or ""
+    origen = origen.strip()
+
+    # Nueva versión: /upload?versionar=<id> precarga un documento publicado; el POST lo recibe en `versionar_id`.
+    versionar_id = (request.form.get("versionar_id") if request.method == "POST" else request.args.get("versionar")) or ""
+    version_doc = None
+    if versionar_id:
+        version_doc = find_doc(load_documents(), versionar_id)
+        if version_doc is None or version_doc["status"] != S_PUB:
+            flash("Només es pot versionar un document publicat.", "error")
+            return redirect(url_for("dashboard") + tab_anchor(S_PUB))
+        if request.method == "GET":
+            form = {"title": version_doc["title"], "content_type": version_doc["content_type"],
+                    "idioma": version_doc.get("idioma") or "",
+                    "canal": version_doc.get("canal") or "",
+                    "taxonomy": version_doc["taxonomy"][0] if version_doc["taxonomy"] else ""}
+            selected_tipologia = list(version_doc["tipologia"])
+            selected_departments = list(version_doc["departamentos_competentes"])
+            selected_sources = list(version_doc["unidades_base_origen"])
+            selected_related = list(version_doc["contenidos_relacionados"])
+
     if request.method == "POST":
-        form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "date", "idioma", "canal")}
+        form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "idioma", "canal")}
         # Familia «Identificación»: todos sus campos son obligatorios.
         form["title"] = request.form.get("titulo", "").strip()
-        form["content_type"] = request.form.get("tipo_contenido", "").strip()
+        form["content_type"] = (version_doc["content_type"] if version_doc  # el tipo no cambia al versionar
+                                else request.form.get("tipo_contenido", "").strip())
         selected_tipologia = list(dict.fromkeys(request.form.getlist("tipologia")))
         # Familia «Origen y trazabilidad» (listas sin duplicados)
         selected_departments = list(dict.fromkeys(request.form.getlist("departamentos_competentes")))
@@ -398,59 +516,53 @@ def upload():
         file = request.files.get("file")
         errors = []
         if not form["title"]:
-            errors.append("Falta el campo obligatorio «Título».")
+            errors.append("Falta el camp obligatori «Títol».")
         if not form["content_type"]:
-            errors.append("Falta el campo obligatorio «Tipo de contenido».")
+            errors.append("Falta el camp obligatori «Tipus de contingut».")
         if not form["idioma"]:
-            errors.append("Falta el campo obligatorio «Idioma».")
+            errors.append("Falta el camp obligatori «Idioma».")
         elif form["idioma"] not in IDIOMAS:
-            errors.append("El idioma debe ser «Catalán» o «Español».")
+            errors.append("L'idioma ha de ser «Català» o «Castellà».")
         if not selected_tipologia:
-            errors.append("Falta el campo obligatorio «Tipología»: selecciona al menos una opción.")
+            errors.append("Falta el camp obligatori «Tipologia»: selecciona almenys una opció.")
         elif any(t not in TIPOLOGIAS for t in selected_tipologia):
-            errors.append("Alguna opción de Tipología no es válida.")
+            errors.append("Alguna opció de Tipologia no és vàlida.")
         if not file or not file.filename:
-            errors.append("Debes seleccionar un archivo.")
+            if not version_doc:  # al versionar el archivo es opcional: si no se sube, se mantiene el anterior
+                errors.append("Has de seleccionar un fitxer.")
         elif not allowed_file(file.filename):
-            errors.append("Tipo de archivo no permitido. Formatos válidos: "
+            errors.append("Tipus de fitxer no permès. Formats vàlids: "
                           + ", ".join(sorted(ALLOWED_EXTENSIONS)) + ".")
-        if not form["date"]:
-            errors.append("Falta el campo obligatorio «Fecha».")
         if form["content_type"] and form["content_type"] not in CONTENT_TYPES:
-            errors.append("El tipo de contenido no es válido.")
-        if form["date"]:
-            try:
-                date.fromisoformat(form["date"])
-            except ValueError:
-                errors.append("La fecha no es válida.")
+            errors.append("El tipus de contingut no és vàlid.")
 
         # Reglas por tipo de contenido (los campos que no aplican al tipo se ignoran).
         taxonomy, source, departments, canal = [], [], [], ""
         valid_departments = departamentos_competentes()
-        if form["content_type"] == "Base":
+        if form["content_type"] in ("Base", "Referenciat"):
             if not selected_departments:
-                errors.append("Falta el campo obligatorio «Departamento competente»: selecciona al menos uno.")
+                errors.append("Falta el camp obligatori «Departament competent»: selecciona'n almenys un.")
             elif any(dep not in valid_departments for dep in selected_departments):
-                errors.append("Algún departamento competente no es válido.")
+                errors.append("Algun departament competent no és vàlid.")
             else:
                 departments = selected_departments
             if form["taxonomy"] not in taxonomy_paths():
-                errors.append("Selecciona una taxonomía válida.")
+                errors.append("Selecciona una taxonomia vàlida.")
             taxonomy = [form["taxonomy"]]  # lista de un elemento; la fuente original no aplica
-        elif form["content_type"] == "Adaptado":
+        elif form["content_type"] == "Adaptat":
             # Se ignora cualquier taxonomía manual: se hereda de las unidades base seleccionadas.
             available = {d["id"]: d for d in published_base_docs(load_documents())}
             if not selected_sources:
-                errors.append("Falta el campo obligatorio «Unidad base de origen»: selecciona al menos un documento base publicado.")
+                errors.append("Falta el camp obligatori «Unitat base d'origen»: selecciona almenys un document base publicat.")
             elif any(i not in available for i in selected_sources):
-                errors.append("Alguna unidad base de origen no es un documento base publicado.")
+                errors.append("Alguna unitat base d'origen no és un document base publicat.")
             else:
                 source = selected_sources
                 taxonomy = list(dict.fromkeys(t for i in source for t in available[i]["taxonomy"]))
             if not form["canal"]:
-                errors.append("Falta el campo obligatorio «Canal».")
+                errors.append("Falta el camp obligatori «Canal».")
             elif form["canal"] not in CANALES:
-                errors.append("El canal seleccionado no es válido.")
+                errors.append("El canal seleccionat no és vàlid.")
             else:
                 canal = form["canal"]
 
@@ -458,16 +570,24 @@ def upload():
         if selected_related:
             published_ids = {d["id"] for d in load_documents() if d["status"] == S_PUB}
             if any(i not in published_ids for i in selected_related):
-                errors.append("Algún contenido relacionado no es un documento publicado.")
+                errors.append("Algun contingut relacionat no és un document publicat.")
 
         if errors:
             for e in errors:
                 flash(e, "error")
-            return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related), 400
+            return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, version_doc), 400
+        elif version_doc:
+            fields = {"title": form["title"], "idioma": form["idioma"], "tipologia": selected_tipologia,
+                      "taxonomy": taxonomy, "departamentos_competentes": departments,
+                      "unidades_base_origen": source, "canal": canal,
+                      "contenidos_relacionados": selected_related}
+            response = save_new_version(versionar_id, file, fields, user)
+            if response is not None:
+                return response
         else:
             filename = secure_filename(file.filename)
             if not filename:
-                flash("El nombre del archivo no es válido.", "error")
+                flash("El nom del fitxer no és vàlid.", "error")
             else:
                 path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
                 with DOCS_LOCK:  # reserva el nombre: tras guardar el archivo, otro upload igual se detecta
@@ -475,7 +595,7 @@ def upload():
                     if not duplicate:
                         file.save(path)
                 if duplicate:
-                    flash("El archivo ya ha sido subido anteriormente", "warning")
+                    flash("El fitxer ja s'ha pujat anteriorment", "warning")
                 else:
                     doc_id = uuid.uuid4().hex[:8]
                     # SimHash y embeddings (red) fuera del bloqueo; nunca bloquea la subida si fallan.
@@ -491,7 +611,8 @@ def upload():
                         "unidades_base_origen": source,
                         "canal": canal,
                         "contenidos_relacionados": selected_related,
-                        "date": form["date"],
+                        "fecha_publicacion": None,
+                        "fecha_revision_prevista": None,
                         "content_type": form["content_type"],
                         "version": 1,
                         "observations": "",
@@ -506,7 +627,7 @@ def upload():
                         "duplicity_analysis_done": False,
                         "fidelity_analysis_result": None,
                         "fidelity_analysis_done": False,
-                        "status": S_ELAB,
+                        "status": EDITOR_STATE[form["content_type"]],
                         "updated_by": user["username"],
                     }
                     try:
@@ -518,16 +639,16 @@ def upload():
                         os.remove(path)
                         if vector_file:
                             os.remove(os.path.join(BASE_DIR, vector_file))
-                        flash("No se pudo guardar el documento. Inténtalo de nuevo.", "error")
-                        return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related)
+                        flash("No s'ha pogut desar el document. Torna-ho a provar.", "error")
+                        return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, version_doc)
                     if vector_file:
-                        flash("Documento subido. El documento queda «En elaboración».", "success")
+                        flash("Document pujat. El document queda en elaboració.", "success")
                     else:
-                        flash("Documento subido «En elaboración», pero no se generaron los vectores "
-                              "(revisa la API key o la cuota de Gemini).", "warning")
+                        flash("Document pujat en elaboració, però no s'han generat els vectors "
+                              "(revisa l'API key o la quota de Gemini).", "warning")
                     return redirect(url_for("dashboard"))
 
-    return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related)
+    return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, version_doc)
 
 
 def change_document(doc_id, action):
@@ -558,12 +679,15 @@ def avanzar_estado(doc_id):
     def action(doc, _user):
         new = next_status(doc)
         if new is None:
-            flash("Este documento no puede avanzar desde su estado actual.", "error")
+            flash("Aquest document no pot avançar des del seu estat actual.", "error")
             return None
         doc["status"] = new
-        if new != S_ELAB:
-            doc["observations"] = ""
-        return f"«{doc['title']}» avanzado a: {new}.", "success"
+        doc["observations"] = ""
+        if new == S_PUB:
+            today = date.today()
+            doc["fecha_publicacion"] = today.isoformat()
+            doc["fecha_revision_prevista"] = (today + timedelta(days=dias_revision_prevista())).isoformat()
+        return f"«{doc['title']}» avançat a: {new}.", "success"
     return change_document(doc_id, action)
 
 
@@ -574,34 +698,15 @@ def rechazar(doc_id):
 
     def action(doc, _user):
         if doc["status"] not in VALIDATION_STATES:
-            flash("Solo se pueden rechazar documentos en validación.", "error")
+            flash("Només es poden rebutjar documents en validació.", "error")
             return None
         if not reason:
-            flash("Debes indicar el motivo de la devolución.", "error")
+            flash("Has d'indicar el motiu de la devolució.", "error")
             return None
-        doc["status"] = S_ELAB
+        doc["status"] = EDITOR_STATE.get(doc["content_type"], S_ED)
         doc["observations"] = reason
-        doc["normative_analysis_done"], doc["normative_analysis_result"] = False, None
-        doc["duplicity_analysis_done"], doc["duplicity_result"] = False, None
-        doc["fidelity_analysis_done"], doc["fidelity_analysis_result"] = False, None
-        return f"«{doc['title']}» devuelto a elaboración.", "warning"
-    return change_document(doc_id, action)
-
-
-@app.route("/versionar/<doc_id>", methods=["POST"])
-@login_required
-def versionar(doc_id):
-    def action(doc, _user):
-        if doc["status"] != S_PUB:
-            flash("Solo se puede versionar un documento publicado.", "error")
-            return None
-        doc["status"] = S_ELAB
-        doc["version"] = int(doc.get("version", 1)) + 1
-        doc["observations"] = ""
-        doc["normative_analysis_done"], doc["normative_analysis_result"] = False, None
-        doc["duplicity_analysis_done"], doc["duplicity_result"] = False, None
-        doc["fidelity_analysis_done"], doc["fidelity_analysis_result"] = False, None
-        return f"«{doc['title']}»: nueva versión {doc['version']} en elaboración.", "success"
+        reset_ai_analysis(doc)
+        return f"«{doc['title']}» retornat a: {doc['status']}.", "warning"
     return change_document(doc_id, action)
 
 
@@ -609,14 +714,14 @@ def versionar(doc_id):
 def api_retirar(doc_id):
     """Retira un documento publicado: borra sus archivos, su registro y las referencias a él."""
     if current_user() is None:
-        return jsonify(success=False, error="Sesión no iniciada."), 401
+        return jsonify(success=False, error="Sessió no iniciada."), 401
     with DOCS_LOCK:
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(success=False, error="Documento no encontrado."), 404
+            return jsonify(success=False, error="Document no trobat."), 404
         if doc["status"] != S_PUB:
-            return jsonify(success=False, error="Solo se puede retirar un documento publicado."), 409
+            return jsonify(success=False, error="Només es pot retirar un document publicat."), 409
 
         remaining = [d for d in docs if d["id"] != doc_id]
         for other in remaining:  # integridad referencial: sin referencias huérfanas al documento retirado
@@ -627,7 +732,7 @@ def api_retirar(doc_id):
             save_documents(remaining)  # primero el registro: si falla, no se borra ningún archivo
         except OSError:
             app.logger.exception("No se pudo guardar documents.json al retirar %s", doc_id)
-            return jsonify(success=False, error="No se pudo actualizar la base documental."), 500
+            return jsonify(success=False, error="No s'ha pogut actualitzar la base documental."), 500
 
         # Archivos del documento: el original, sus PDF anotados ({id}_...) y su archivo de vectores.
         keep = {"documents.json"} | {d.get("filename") for d in remaining}  # nunca archivos de otros documentos
@@ -644,7 +749,7 @@ def api_retirar(doc_id):
                 pass
             except OSError:
                 app.logger.exception("No se pudo eliminar %s", path)
-    return jsonify(success=True, message="Documento y archivos asociados eliminados correctamente",
+    return jsonify(success=True, message="Document i fitxers associats eliminats correctament",
                    deleted_id=doc_id)
 
 
@@ -652,26 +757,28 @@ def api_retirar(doc_id):
 def api_analyze(doc_id):
     """Audita con IA la claridad y coherencia de un PDF y guarda el resultado."""
     if current_user() is None:
-        return jsonify(ok=False, error="Sesión no iniciada."), 401
+        return jsonify(ok=False, error="Sessió no iniciada."), 401
     doc = find_doc(load_documents(), doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Documento no encontrado."), 404
+        return jsonify(ok=False, error="Document no trobat."), 404
+    if doc["status"] != S_RD:
+        return jsonify(ok=False, error="El document no està pendent del Referent Departamental."), 409
     filename = doc.get("filename") or ""
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Solo se pueden analizar documentos PDF."), 400
+        return jsonify(ok=False, error="Només es poden analitzar documents PDF."), 400
     path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     if not os.path.isfile(path):
-        return jsonify(ok=False, error="Archivo físico no disponible"), 404
+        return jsonify(ok=False, error="Fitxer físic no disponible"), 404
     api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
     if not api_key or "tu_api_key" in api_key:
-        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) en el archivo .env."), 503
+        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
 
     try:
         from agents.reviewer_agent import run_review  # import diferido: la app arranca sin la IA
         result = clean_and_parse_json(run_review(path))
     except Exception as exc:
         app.logger.exception("Fallo en el análisis IA de %s", doc_id)
-        return jsonify(ok=False, error=f"No se pudo completar el análisis: {exc}"), 502
+        return jsonify(ok=False, error=f"No s'ha pogut completar l'anàlisi: {exc}"), 502
     if result.get("error"):  # respuesta no parseable: no se guarda como completada
         return jsonify(ok=False, error=result["mensaje"]), 502
 
@@ -679,7 +786,7 @@ def api_analyze(doc_id):
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El documento ya no existe."), 404
+            return jsonify(ok=False, error="El document ja no existeix."), 404
         doc["referente_analysis_result"] = result
         doc["analysis_done"] = True
         save_documents(docs)
@@ -690,32 +797,32 @@ def api_analyze(doc_id):
 def api_validate_normative(doc_id):
     """Valida con IA un PDF contra la normativa de normativa/ y guarda el resultado."""
     if current_user() is None:
-        return jsonify(ok=False, error="Sesión no iniciada."), 401
+        return jsonify(ok=False, error="Sessió no iniciada."), 401
     doc = find_doc(load_documents(), doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Documento no encontrado."), 404
+        return jsonify(ok=False, error="Document no trobat."), 404
     if doc["status"] != S_UF:
-        return jsonify(ok=False, error="El documento no está pendiente de la Unidad Finalista."), 409
+        return jsonify(ok=False, error="El document no està pendent de la Unitat Finalista."), 409
     filename = doc.get("filename") or ""
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Solo se pueden validar documentos PDF."), 400
+        return jsonify(ok=False, error="Només es poden validar documents PDF."), 400
     path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     if not os.path.isfile(path):
-        return jsonify(ok=False, error="Archivo físico no disponible"), 404
+        return jsonify(ok=False, error="Fitxer físic no disponible"), 404
     api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
     if not api_key or "tu_api_key" in api_key:
-        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) en el archivo .env."), 503
+        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
 
     try:
         from agents.tools import list_normative_pdfs
         if not list_normative_pdfs():
-            return jsonify(ok=False, error="No hay leyes cargadas en la carpeta normativa/. "
-                                           "Añade archivos PDF de normativa y vuelve a intentarlo."), 409
+            return jsonify(ok=False, error="No hi ha lleis carregades a la carpeta normativa/. "
+                                           "Afegeix fitxers PDF de normativa i torna-ho a provar."), 409
         from agents.normative_agent import run_normative_review  # import diferido
         result = clean_and_parse_json(run_normative_review(path))
     except Exception as exc:
         app.logger.exception("Fallo en la validación normativa de %s", doc_id)
-        return jsonify(ok=False, error=f"No se pudo completar la validación: {exc}"), 502
+        return jsonify(ok=False, error=f"No s'ha pogut completar la validació: {exc}"), 502
     if result.get("error"):  # respuesta no parseable: no se guarda como completada
         return jsonify(ok=False, error=result["mensaje"]), 502
 
@@ -723,7 +830,7 @@ def api_validate_normative(doc_id):
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El documento ya no existe."), 404
+            return jsonify(ok=False, error="El document ja no existeix."), 404
         doc["normative_analysis_result"] = result
         doc["normative_analysis_done"] = True
         save_documents(docs)
@@ -734,26 +841,26 @@ def api_validate_normative(doc_id):
 def api_detect_duplicity(doc_id):
     """Detecta duplicidades (SimHash + similitud vectorial) y guarda el resultado."""
     if current_user() is None:
-        return jsonify(ok=False, error="Sesión no iniciada."), 401
+        return jsonify(ok=False, error="Sessió no iniciada."), 401
     docs = load_documents()
     doc = find_doc(docs, doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Documento no encontrado."), 404
+        return jsonify(ok=False, error="Document no trobat."), 404
     if doc["status"] != S_GCB:
-        return jsonify(ok=False, error="El documento no está pendiente del Gestor Conocimiento Base."), 409
+        return jsonify(ok=False, error="El document no està pendent del Gestor Coneixement Base."), 409
     try:
         result = gestor_conocimiento.detect_document_duplicity(
             doc_id, docs, vectors_dir=os.path.join(BASE_DIR, "vectores"),
             config_path=os.path.join(BASE_DIR, "config.json"))
     except Exception as exc:
         app.logger.exception("Fallo en la detección de duplicidades de %s", doc_id)
-        return jsonify(ok=False, error=f"No se pudo completar la detección: {exc}"), 500
+        return jsonify(ok=False, error=f"No s'ha pogut completar la detecció: {exc}"), 500
 
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante el cálculo
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El documento ya no existe."), 404
+            return jsonify(ok=False, error="El document ja no existeix."), 404
         doc["duplicity_result"] = result
         doc["duplicity_analysis_done"] = True
         save_documents(docs)
@@ -764,25 +871,25 @@ def api_detect_duplicity(doc_id):
 def api_check_fidelity(doc_id):
     """Comprueba con IA la fidelidad de un documento Adaptado respecto a sus fuentes Base."""
     if current_user() is None:
-        return jsonify(ok=False, error="Sesión no iniciada."), 401
+        return jsonify(ok=False, error="Sessió no iniciada."), 401
     docs = load_documents()
     doc = find_doc(docs, doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Documento no encontrado."), 404
+        return jsonify(ok=False, error="Document no trobat."), 404
     if doc["status"] != S_GCC:
-        return jsonify(ok=False, error="El documento no está pendiente del Gestor Conocimiento Canal."), 409
+        return jsonify(ok=False, error="El document no està pendent del Gestor Coneixement Canal."), 409
     folder = app.config["UPLOAD_FOLDER"]
     filename = doc.get("filename") or ""
     adapted_path = os.path.join(folder, filename)
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Solo se pueden comprobar documentos PDF."), 400
+        return jsonify(ok=False, error="Només es poden comprovar documents PDF."), 400
     if not os.path.isfile(adapted_path):
-        return jsonify(ok=False, error="Archivo físico no disponible"), 404
+        return jsonify(ok=False, error="Fitxer físic no disponible"), 404
 
     sources = doc.get("unidades_base_origen") if isinstance(doc.get("unidades_base_origen"), list) else []
     if not sources:
-        return jsonify(ok=False, error="Este documento no tiene documentos fuente asociados; "
-                                       "no hay nada con lo que comprobar su fidelidad."), 409
+        return jsonify(ok=False, error="Aquest document no té documents font associats; "
+                                       "no hi ha res amb què comprovar-ne la fidelitat."), 409
     by_id = {d["id"]: d for d in docs}
     source_paths, missing = [], 0
     for sid in sources:
@@ -793,27 +900,27 @@ def api_check_fidelity(doc_id):
         else:
             missing += 1
     if not source_paths:
-        return jsonify(ok=False, error="Ninguno de los documentos fuente tiene un PDF disponible."), 409
+        return jsonify(ok=False, error="Cap dels documents font té un PDF disponible."), 409
     api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
     if not api_key or "tu_api_key" in api_key:
-        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) en el archivo .env."), 503
+        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
 
     try:
         from agents.comprobar_fidelidad import run_fidelity_check  # import diferido
         result = clean_and_parse_json(run_fidelity_check(adapted_path, source_paths))
     except Exception as exc:
         app.logger.exception("Fallo en la comprobación de fidelidad de %s", doc_id)
-        return jsonify(ok=False, error=f"No se pudo completar la comprobación: {exc}"), 502
+        return jsonify(ok=False, error=f"No s'ha pogut completar la comprovació: {exc}"), 502
     if result.get("error"):  # respuesta no parseable: no se guarda como completada
         return jsonify(ok=False, error=result["mensaje"]), 502
     if missing:
-        result["nota"] = f"{missing} documento(s) fuente no se pudieron incluir por no tener un PDF disponible."
+        result["nota"] = f"{missing} document(s) font no s'han pogut incloure perquè no tenen un PDF disponible."
 
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante la llamada al modelo
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El documento ya no existe."), 404
+            return jsonify(ok=False, error="El document ja no existeix."), 404
         doc["fidelity_analysis_result"] = result
         doc["fidelity_analysis_done"] = True
         save_documents(docs)
@@ -835,10 +942,10 @@ def incoherencias_of(result):
 def api_generate_annotated_pdf(doc_id):
     """Genera uploads/{doc_id}_annotated.pdf con las incoherencias de la IA resaltadas."""
     if current_user() is None:
-        return jsonify(ok=False, error="Sesión no iniciada."), 401
+        return jsonify(ok=False, error="Sessió no iniciada."), 401
     doc = find_doc(load_documents(), doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Documento no encontrado."), 404
+        return jsonify(ok=False, error="Document no trobat."), 404
 
     results = {"normative": doc.get("normative_analysis_result"), "fidelity": doc.get("fidelity_analysis_result"),
                "referente": doc.get("referente_analysis_result")}
@@ -846,20 +953,20 @@ def api_generate_annotated_pdf(doc_id):
                      "referente": "referente_analysis_result"}
     kind = request.form.get("kind")
     if kind not in results:  # sin indicar: el análisis disponible (el de su fase tiene prioridad)
-        order = {S_GCC: ["fidelity", "normative", "referente"], S_ELAB: ["referente", "normative", "fidelity"]}
+        order = {S_GCC: ["fidelity", "normative", "referente"], S_RD: ["referente", "normative", "fidelity"]}
         kind = next((k for k in order.get(doc["status"], ["normative", "fidelity", "referente"]) if results[k]), None)
     if not kind or not results[kind]:
-        return jsonify(ok=False, error="El documento no tiene un análisis de IA previo."), 400
+        return jsonify(ok=False, error="El document no té cap anàlisi d'IA previ."), 400
     incoherencias = incoherencias_of(results[kind])
     if not incoherencias:
-        return jsonify(ok=False, error="El análisis no contiene incoherencias que anotar."), 400
+        return jsonify(ok=False, error="L'anàlisi no conté incoherències per anotar."), 400
 
     filename = doc.get("filename") or ""
     original = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Solo se pueden anotar documentos PDF."), 400
+        return jsonify(ok=False, error="Només es poden anotar documents PDF."), 400
     if not os.path.isfile(original):
-        return jsonify(ok=False, error="Archivo físico no disponible"), 404
+        return jsonify(ok=False, error="Fitxer físic no disponible"), 404
 
     # El informe de claridad (Referente) tiene su propio PDF y su propio formato de recuadro.
     annotated_name = f"{doc_id}_referente_annotated.pdf" if kind == "referente" else f"{doc_id}_annotated.pdf"
@@ -867,13 +974,13 @@ def api_generate_annotated_pdf(doc_id):
     annotator = annotate_referente_pdf if kind == "referente" else annotate_pdf_with_ai_results
     saved, enriched = annotator(original, annotated, incoherencias)
     if not saved:
-        return jsonify(ok=False, error="No se pudo localizar ninguna de las frases analizadas en el PDF "
-                                       "(¿es un documento escaneado o el texto difiere?)."), 422
+        return jsonify(ok=False, error="No s'ha pogut localitzar cap de les frases analitzades al PDF "
+                                       "(és un document escanejat o el text difereix?)."), 422
     pages = [i.get("page_number") for i in enriched]
     found = sum(1 for n in pages if n)
-    message = f"Se anotaron {found} de {len(pages)} frases."
+    message = f"S'han anotat {found} de {len(pages)} frases."
     if found < len(pages):
-        message += " Las restantes no se localizaron literalmente en el PDF."
+        message += " Les restants no s'han localitzat literalment al PDF."
 
     with DOCS_LOCK:  # se guardan las páginas junto a cada hallazgo para poder navegar sin regenerar
         docs = load_documents()
@@ -907,26 +1014,26 @@ def download(doc_id):
         abort(404)
     path = os.path.join(app.config["UPLOAD_FOLDER"], doc.get("filename") or "")
     if not doc.get("filename") or not os.path.isfile(path):
-        flash("Archivo físico no disponible", "error")
+        flash("Fitxer físic no disponible", "error")
         return redirect(url_for("dashboard"))
     return send_from_directory(app.config["UPLOAD_FOLDER"], doc["filename"])
 
 
 @app.errorhandler(413)
 def too_large(_e):
-    flash("El archivo supera el tamaño máximo permitido (16 MB).", "error")
+    flash("El fitxer supera la mida màxima permesa (16 MB).", "error")
     return redirect(url_for("upload"))
 
 
 @app.errorhandler(403)
 def forbidden(_e):
-    flash("No tienes permiso para acceder a este recurso.", "error")
+    flash("No tens permís per accedir a aquest recurs.", "error")
     return redirect(url_for("dashboard") if current_user() else url_for("login"))
 
 
 @app.errorhandler(404)
 def not_found(_e):
-    flash("Recurso no encontrado.", "error")
+    flash("Recurs no trobat.", "error")
     return redirect(url_for("dashboard") if current_user() else url_for("login"))
 
 

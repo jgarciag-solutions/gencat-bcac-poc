@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="ca">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}BCAC{% endblock %} · Gobernanza documental</title>
+  <title>{% block title %}BCAC{% endblock %} · Governança documental</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
@@ -11,14 +11,14 @@
   <header class="topbar">
     <a class="brand" href="{{ url_for('dashboard') }}">
       <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Gencat" class="brand-logo">
-      <span>BCAC · Gobernanza documental</span>
+      <span>BCAC · Governança documental</span>
     </a>
     <nav>
       <div class="user-chip">
         <strong>{{ user.name }}</strong>
         <small>{{ user.role }}</small>
       </div>
-      <a class="btn btn-sm" href="{{ url_for('logout') }}">Cerrar sesión</a>
+      <a class="btn btn-sm" href="{{ url_for('logout') }}">Tanca la sessió</a>
     </nav>
   </header>
   {% endif %}

@@ -1,15 +1,15 @@
 {% extends "base.html" %}
-{% block title %}Panel{% endblock %}
+{% block title %}Tauler{% endblock %}
 {% block content %}
 <main class="dashboard-main">
   <header class="page-header">
     <div>
-      <h1>Flujo de Gobernanza Documental</h1>
-      <p>Estado del flujo de gobernanza documental, por rol.</p>
+      <h1>Flux de Governança Documental</h1>
+      <p>Estat del flux de governança documental, per rol.</p>
     </div>
   </header>
 
-  <nav class="tabs" role="tablist" aria-label="Flujo por rol">
+  <nav class="tabs" role="tablist" aria-label="Flux per rol">
     {% for tab in tabs %}
     <button type="button" class="tab-btn{{ ' active' if loop.first }}" role="tab"
             id="tab-{{ tab.slug }}" data-tab="{{ tab.slug }}"
@@ -24,9 +24,9 @@
   <section class="tab-pane{{ ' active' if loop.first }}" id="pane-{{ tab.slug }}" role="tabpanel"
            aria-labelledby="tab-{{ tab.slug }}">
     <div class="pane-header">
-      <p>Pendientes de acción · <span class="badge badge-{{ loop.index }}">{{ tab.status }}</span></p>
-      {% if loop.first %}
-      <a class="btn btn-primary" href="{{ url_for('upload') }}">+ Subir Nuevo Documento</a>
+      <p>Pendents d'acció · <span class="badge badge-{{ loop.index }}">{{ tab.status }}</span></p>
+      {% if tab.slug in ('editor-departamental', 'editor-canal') %}
+      <a class="btn btn-primary" href="{{ url_for('upload', origen=tab.slug) }}">+ Puja un nou document</a>
       {% endif %}
     </div>
 
@@ -35,15 +35,17 @@
         <table>
           <thead>
             <tr>
-              <th>Título</th>
-              <th>Taxonomía</th>
-              <th>Fuente original</th>
-              <th>Departamento</th>
-              <th>Tipo</th>
-              <th>Versión</th>
-              <th>Fecha</th>
-              <th>Estado</th>
-              <th>Acciones</th>
+              <th>Títol</th>
+              <th>ID</th>
+              <th>Tipus de contingut</th>
+              <th>Tipologia</th>
+              <th>Idioma</th>
+              <th>Versió</th>
+              <th>Departament</th>
+              <th>Taxonomia</th>
+              <th>Publicació</th>
+              <th>Estat</th>
+              <th>Accions</th>
             </tr>
           </thead>
           <tbody>
@@ -52,16 +54,19 @@
               <td>
                 <a class="doc-title" href="{{ url_for('download', doc_id=d.id) }}">{{ d.title }}</a>
                 <small>{{ d.filename }}</small>
-                {% if tab.status == 'En elaboración' and d.observations %}
-                <div class="obs-alert" role="alert"><strong>Devuelto:</strong> {{ d.observations }}</div>
+                {% if d.observations %}
+                <div class="obs-alert" role="alert"><strong>Retornat:</strong> {{ d.observations }}</div>
                 {% endif %}
               </td>
-              <td>{{ d.taxonomy | join(', ') or '—' }}</td>
-              <td>{{ d.source_titles | join(', ') or '—' }}</td>
-              <td>{{ d.department }}</td>
+              <td>{{ d.id }}</td>
               <td>{{ d.content_type }}</td>
+              <td>{{ d.tipologia | join(', ') or '—' }}</td>
+              <td>{{ d.idioma or '—' }}</td>
               <td>v{{ d.version }}</td>
-              <td>{{ d.date }}</td>
+              <td>{{ d.department or '—' }}</td>
+              <td>{{ d.taxonomy | join(', ') or '—' }}</td>
+              <td>{{ (d.fecha_publicacion | fecha_es) or '—' }}
+                {% if d.fecha_revision_prevista %}<small>Revisió: {{ d.fecha_revision_prevista | fecha_es }}</small>{% endif %}</td>
               <td><span class="badge badge-{{ d.badge }}">{{ d.status }}</span></td>
               <td>
                 <div class="actions">
@@ -69,9 +74,9 @@
                   {% if viewable %}
                   <button type="button" class="btn btn-outline-secondary btn-sm btn-ver-original"
                           data-url="{{ url_for('download', doc_id=d.id) }}"
-                          data-filename="{{ d.filename }}"> Ver Documento Original</button>
+                          data-filename="{{ d.filename }}"> Veure Document Original</button>
                   {% endif %}
-                  {% set needs_normative = tab.status == 'En validación - Pte. Unidad Finalista' %}
+                  {% set needs_normative = tab.slug == 'validador-finalista' %}
                   {% if d.can_advance %}
                   <form method="post" action="{{ url_for('avanzar_estado', doc_id=d.id) }}">
                     <button type="submit" class="btn btn-success btn-sm">{{ d.action }}</button>
@@ -83,48 +88,46 @@
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.normative_analysis_done else 'false' }}"
                           data-result='{{ (d.normative_analysis_result | tojson) if d.normative_analysis_result else "" }}'
-                          data-clarity='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Ver informe' if d.normative_analysis_done else 'Validación normativa' }}</button>
+                          data-clarity='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Veure informe' if d.normative_analysis_done else 'Validació normativa' }}</button>
                   {% endif %}
-                  {% if tab.status == 'En validación - Pte. Gestor Conocimiento Canal' %}
+                  {% if tab.slug == 'gestor-coneixement-canal' %}
                   <button type="button" class="btn btn-sm js-fidelity"
                           data-url="{{ url_for('api_check_fidelity', doc_id=d.id) }}"
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.fidelity_analysis_done else 'false' }}"
-                          data-result='{{ (d.fidelity_analysis_result | tojson) if d.fidelity_analysis_result else "" }}'>{{ 'Ver Informe Fidelidad' if d.fidelity_analysis_done else 'Comprobar Fidelidad' }}</button>
+                          data-result='{{ (d.fidelity_analysis_result | tojson) if d.fidelity_analysis_result else "" }}'>{{ 'Veure Informe Fidelitat' if d.fidelity_analysis_done else 'Comprovar Fidelitat' }}</button>
                   {% endif %}
-                  {% if tab.status == 'En validación - Pte. Gestor Conocimiento Base' %}
+                  {% if tab.slug == 'gestor-coneixement-base' %}
                   <button type="button" class="btn btn-sm js-duplicity"
                           data-url="{{ url_for('api_detect_duplicity', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.duplicity_analysis_done else 'false' }}"
-                          data-result='{{ (d.duplicity_result | tojson) if d.duplicity_result else "" }}'>{{ 'Ver informe' if d.duplicity_analysis_done else 'Detección de duplicidades' }}</button>
+                          data-result='{{ (d.duplicity_result | tojson) if d.duplicity_result else "" }}'>{{ 'Veure informe' if d.duplicity_analysis_done else 'Detecció de duplicitats' }}</button>
                   {% endif %}
-                  {% if tab.status == 'En elaboración' and d.filename.lower().endswith('.pdf') %}
+                  {% if tab.slug == 'referent-departamental' and d.filename.lower().endswith('.pdf') %}
                   <button type="button" class="btn btn-sm js-analyze"
                           data-url="{{ url_for('api_analyze', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.analysis_done else 'false' }}"
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
-                          data-result='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Ver informe' if d.analysis_done else 'Analizar con IA' }}</button>
+                          data-result='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Veure informe' if d.analysis_done else 'Analitzar amb IA' }}</button>
                   {% endif %}
                   {% if tab.status in validation_states %}
                   <button type="button" class="btn btn-danger btn-sm js-reject"
                           data-action="{{ url_for('rechazar', doc_id=d.id) }}"
-                          data-title="{{ d.title }}">Rechazar</button>
+                          data-title="{{ d.title }}">Rebutja</button>
                   {% endif %}
-                  {% if tab.status == 'Publicada' %}
-                  <form method="post" action="{{ url_for('versionar', doc_id=d.id) }}">
-                    <button type="submit" class="btn btn-sm">Crear nueva versión</button>
-                  </form>
+                  {% if tab.slug == 'publicats' %}
+                  <a href="{{ url_for('upload', versionar=d.id) }}" class="btn btn-outline-secondary btn-sm">Crea una nova versió</a>
                   <button type="button" class="btn btn-danger btn-sm js-retirar"
-                          data-url="{{ url_for('api_retirar', doc_id=d.id) }}">Retirar contenido</button>
+                          data-url="{{ url_for('api_retirar', doc_id=d.id) }}">Retira el contingut</button>
                   {% endif %}
-                  {% if not viewable and not d.can_advance and tab.status not in validation_states and tab.status != 'Publicada' %}
+                  {% if not viewable and not d.can_advance and tab.status not in validation_states and tab.slug != 'publicats' %}
                   <small>—</small>
                   {% endif %}
                 </div>
               </td>
             </tr>
             {% else %}
-            <tr><td colspan="9" class="empty">No hay documentos en esta fase.</td></tr>
+            <tr><td colspan="11" class="empty">No hi ha documents en aquesta fase.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -136,15 +139,15 @@
 
 <dialog id="reject-dialog" class="modal">
   <form method="post" id="reject-form">
-    <h2>Rechazar documento</h2>
+    <h2>Rebutja el document</h2>
     <p id="reject-title" class="hint"></p>
     <div class="field">
-      <label for="reject-reason">Motivo de la devolución</label>
+      <label for="reject-reason">Motiu de la devolució</label>
       <textarea id="reject-reason" name="motivo" rows="4" maxlength="500" required></textarea>
     </div>
     <div class="form-actions">
-      <button type="button" class="btn" id="reject-cancel">Cancelar</button>
-      <button type="submit" class="btn btn-danger">Rechazar</button>
+      <button type="button" class="btn" id="reject-cancel">Cancel·la</button>
+      <button type="submit" class="btn btn-danger">Rebutja</button>
     </div>
   </form>
 </dialog>
@@ -189,14 +192,14 @@
     document.getElementById('reject-cancel').addEventListener('click', function () { dialog.close(); });
 
     // Informes de IA (/api/analyze y /api/validate_normative) en filas desplegables.
-    var SUCCESS_RE = /no s['’]han trobat contradiccions|el document és clar|se ajusta a la normativa vigente|no se han detectado duplicidades|totalmente fiel a las fuentes originales/i;
-    var DANGER_RE = /incoher[eè]nci|contradiccion|contradicci[oó]|duplicidad detectada|contenido similar detectado|coincidencia exacta/i;
+    var SUCCESS_RE = /no s['’]han trobat contradiccions|el document és clar|s['’]ajusta a la normativa vigent|no s['’]han detectat duplicitats|totalment fidel a les fonts originals/i;
+    var DANGER_RE = /incoher[eè]nci|contradicci|duplicitat detectada|contingut similar detectat|coincid[eè]ncia exacta/i;
     var FINDING_RE = /^\s*\*\*\d+\./m;
     var KINDS = {
-      analyze: { key: 'referente_analysis_result', pdfKind: 'referente', label: 'Analizar con IA', title: 'Auditoría de claridad (IA)' },
-      normative: { key: 'normative_analysis_result', pdfKind: 'normative', label: 'Validación normativa', title: 'Validación normativa (IA)' },
-      duplicity: { key: 'duplicity_result', label: 'Detección de duplicidades', title: 'Detección de duplicidades' },
-      fidelity: { key: 'fidelity_analysis_result', pdfKind: 'fidelity', label: 'Comprobar Fidelidad', doneLabel: 'Ver Informe Fidelidad', title: 'Comprobación de fidelidad (IA)' }
+      analyze: { key: 'referente_analysis_result', pdfKind: 'referente', label: 'Analitzar amb IA', title: 'Auditoria de claredat (IA)' },
+      normative: { key: 'normative_analysis_result', pdfKind: 'normative', label: 'Validació normativa', title: 'Validació normativa (IA)' },
+      duplicity: { key: 'duplicity_result', label: 'Detecció de duplicitats', title: 'Detecció de duplicitats' },
+      fidelity: { key: 'fidelity_analysis_result', pdfKind: 'fidelity', label: 'Comprovar Fidelitat', doneLabel: 'Veure Informe Fidelitat', title: 'Comprovació de fidelitat (IA)' }
     };
 
     function kindOf(btn) {
@@ -234,13 +237,13 @@
       var cards = items.map(function (item) {
         var page = item.page_number;
         var head = '<header class="card-head"><h5>' + esc(item.descripcio || item.titulo) + '</h5>' +
-          (plain ? '' : '<span class="page-badge">' + (page ? 'Página ' + esc(page) : 'Ver en PDF') + ' ➔</span>') + '</header>';
+          (plain ? '' : '<span class="page-badge">' + (page ? 'Pàgina ' + esc(page) : 'Veure al PDF') + ' ➔</span>') + '</header>';
         return '<article class="incoherence-card' + (plain ? ' static' : '') + '"' +
-          (plain ? '' : ' data-page="' + esc(page || 1) + '" tabindex="0" role="button" title="Ver en el PDF"') + '>' + head +
-          '<p><strong>Frase analizada:</strong> ' + esc(item.frase_analizada) + '</p>' +
+          (plain ? '' : ' data-page="' + esc(page || 1) + '" tabindex="0" role="button" title="Veure al PDF"') + '>' + head +
+          '<p><strong>Frase analitzada:</strong> ' + esc(item.frase_analizada) + '</p>' +
           (item.texto_infrinjido ? '<p><strong>Document / Normativa infringida:</strong> ' + esc(item.texto_infrinjido) + '</p>' : '') +
           '<p><strong>Explicació:</strong> ' + esc(item.explicacion) + '</p>' +
-          (item.propuesta ? '<div class="proposal"><strong>Propuesta de mejora:</strong> ' + esc(item.propuesta) + '</div>' : '') +
+          (item.propuesta ? '<div class="proposal"><strong>Proposta de millora:</strong> ' + esc(item.propuesta) + '</div>' : '') +
           '</article>';
       }).join('');
       return '<div class="alert-danger"><p class="ai-title">' + msg + '</p>' + cards + note + '</div>';
@@ -348,11 +351,11 @@
     }
 
     // Documento original (todas las pestañas): <iframe> único al 100% del ancho, con toggle.
-    var ORIGINAL_LABEL = 'Ver Documento Original';
+    var ORIGINAL_LABEL = 'Veure Document Original';
     function setOriginalLabel(btn, open, text) {
       var tr = btn.closest('tr');
       var row = tr.classList.contains('expandable-row') ? tr : tr.nextElementSibling;
-      var label = text || (open ? 'Ocultar Documento Original' : ORIGINAL_LABEL);
+      var label = text || (open ? 'Amagar Document Original' : ORIGINAL_LABEL);
       [tr, row].forEach(function (scope) {
         if (scope && scope.querySelectorAll) scope.querySelectorAll('.btn-ver-original').forEach(function (b) { b.textContent = label; });
       });
@@ -374,14 +377,14 @@
       // El servidor redirige al dashboard si el archivo físico falta: se detecta antes de incrustarlo.
       fetch(btn.dataset.url, { method: 'HEAD' })
         .then(function (r) {
-          if (r.redirected || !r.ok) throw new Error('Archivo físico no disponible');
+          if (r.redirected || !r.ok) throw new Error('Fitxer físic no disponible');
           var holder = ensureRow(btn).querySelector('.original-viewer');
           holder.textContent = '';
           var title = document.createElement('h4');
-          title.textContent = 'Documento original · ' + (btn.dataset.filename || '');
+          title.textContent = 'Document original · ' + (btn.dataset.filename || '');
           var frame = document.createElement('iframe');
           frame.className = 'pdf-frame';
-          frame.title = 'Documento original';
+          frame.title = 'Document original';
           frame.src = btn.dataset.url;
           holder.appendChild(title);
           holder.appendChild(frame);
@@ -396,7 +399,7 @@
           box.className = 'alert-danger';
           var p = document.createElement('p');
           p.className = 'ai-title';
-          p.textContent = err instanceof TypeError ? 'Error de red: no se pudo contactar con el servidor.' : err.message;
+          p.textContent = err instanceof TypeError ? 'Error de xarxa: no s\'ha pogut contactar amb el servidor.' : err.message;
           box.appendChild(p);
           holder.appendChild(box);
           holder.classList.add('open');
@@ -415,9 +418,9 @@
         var oldMsg = btn.parentElement.querySelector('.retirar-error');
         if (oldMsg) oldMsg.remove();
         fetch(btn.dataset.url, { method: 'POST', headers: { 'Accept': 'application/json' } })
-          .then(function (r) { return r.json().catch(function () { return { success: false, error: 'Respuesta no válida del servidor.' }; }); })
+          .then(function (r) { return r.json().catch(function () { return { success: false, error: 'Resposta no vàlida del servidor.' }; }); })
           .then(function (data) {
-            if (!data.success) throw new Error(data.error || 'No se pudo retirar el contenido.');
+            if (!data.success) throw new Error(data.error || 'No s\'ha pogut retirar el contingut.');
             var next = tr.nextElementSibling;
             var detail = next && next.classList.contains('expandable-row') ? next : null;
             tr.classList.add('row-fade-out');
@@ -429,7 +432,7 @@
               if (counter) counter.textContent = Math.max(0, (parseInt(counter.textContent, 10) || 0) - 1);
               if (!tbody.querySelector('tr')) { // la pestaña se queda sin documentos
                 var empty = document.createElement('tr');
-                empty.innerHTML = '<td colspan="9" class="empty">No hay documentos en esta fase.</td>';
+                empty.innerHTML = '<td colspan="11" class="empty">No hi ha documents en aquesta fase.</td>';
                 tbody.appendChild(empty);
               }
             }, 350);
@@ -438,7 +441,7 @@
             btn.disabled = false;
             var msg = document.createElement('small');
             msg.className = 'retirar-error';
-            msg.textContent = err instanceof TypeError ? 'Error de red.' : err.message;
+            msg.textContent = err instanceof TypeError ? 'Error de xarxa.' : err.message;
             btn.after(msg);
           });
       });
@@ -453,7 +456,7 @@
     function pdfTools(btn, kind, value) {
       var items = value && typeof value === 'object' ? (value.incoherencies || value.incoherencias || []) : [];
       if (!items.length || !btn.dataset.annotateUrl) return null;
-      var LABEL = 'Generar y ver PDF anotado';
+      var LABEL = 'Generar i veure PDF anotat';
       var box = document.createElement('div');
       box.className = 'pdf-tools';
       var bar = document.createElement('div');
@@ -484,7 +487,7 @@
           if (!item || !item.page_number) return;
           if (cards[i]) {
             cards[i].dataset.page = item.page_number;
-            cards[i].querySelector('.page-badge').textContent = 'Página ' + item.page_number + ' ➔';
+            cards[i].querySelector('.page-badge').textContent = 'Pàgina ' + item.page_number + ' ➔';
           }
           if (storedItems[i]) storedItems[i].page_number = item.page_number;
         });
@@ -497,7 +500,7 @@
         if (showingOriginal) { showingOriginal = false; setOriginalLabel(btn, false); }
         frame.hidden = false;
         frame.src = pdfUrl + '#page=' + page;
-        button.textContent = 'Ocultar PDF anotado';
+        button.textContent = 'Amagar PDF anotat';
         box.parentElement.querySelectorAll('.incoherence-card.active').forEach(function (c) { c.classList.remove('active'); });
         if (card) card.classList.add('active');
         frame.classList.add('synced');
@@ -507,42 +510,42 @@
 
       function generate(page, card) {
         button.disabled = true;
-        button.textContent = 'Anotando PDF...';
+        button.textContent = 'Anotant PDF...';
         setStatus('', false);
         fetch(btn.dataset.annotateUrl, {
           method: 'POST',
           headers: { 'Accept': 'application/json' },
           body: new URLSearchParams({ kind: kind.pdfKind })
         })
-          .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Respuesta no válida del servidor.' }; }); })
+          .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Resposta no vàlida del servidor.' }; }); })
           .then(function (data) {
             if (data.ok) {
               pdfUrl = data.pdf_url;
               frame = document.createElement('iframe');
               frame.className = 'pdf-frame';
-              frame.title = 'PDF anotado';
+              frame.title = 'PDF anotat';
               viewer.appendChild(frame);
               applyPages(data.incoherencias || []);
               jumpTo(page || Number(card && card.dataset.page) || 1, card);
               setStatus(data.mensaje || '', false);
             } else {
               button.textContent = LABEL;
-              setStatus('Error: ' + (data.error || 'no se pudo generar el PDF anotado.'), true);
+              setStatus('Error: ' + (data.error || 'no s\'ha pogut generar el PDF anotat.'), true);
             }
           })
           .catch(function () {
             button.textContent = LABEL;
-            setStatus('Error de red: no se pudo contactar con el servidor.', true);
+            setStatus('Error de xarxa: no s\'ha pogut contactar amb el servidor.', true);
           })
           .then(function () { button.disabled = false; });
       }
 
-      // El botón "Ver Documento Original" reutiliza este mismo <iframe> cuando ya existe.
+      // El botón "Veure Document Original" reutiliza este mismo <iframe> cuando ya existe.
       function showAnnotated() {
         showingOriginal = false;
         frame.hidden = false;
         frame.src = pdfUrl + '#page=' + lastPage;
-        button.textContent = 'Ocultar PDF anotado';
+        button.textContent = 'Amagar PDF anotat';
         setOriginalLabel(btn, false);
       }
       box.swapOriginal = function (originalUrl) {
@@ -551,8 +554,8 @@
         showingOriginal = true;
         frame.hidden = false;
         frame.src = originalUrl;
-        button.textContent = 'Ver PDF anotado';
-        setOriginalLabel(btn, false, 'Ver PDF anotado');
+        button.textContent = 'Veure PDF anotat';
+        setOriginalLabel(btn, false, 'Veure PDF anotat');
         frame.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         return true;
       };
@@ -561,7 +564,7 @@
         if (!frame) { generate(null); return; }
         if (showingOriginal) { showAnnotated(); return; }
         frame.hidden = !frame.hidden; // toggle del visor ya cargado
-        button.textContent = frame.hidden ? 'Ver PDF anotado' : 'Ocultar PDF anotado';
+        button.textContent = frame.hidden ? 'Veure PDF anotat' : 'Amagar PDF anotat';
       });
 
       // Llamado por las tarjetas de hallazgo.
@@ -589,7 +592,7 @@
     function showReport(btn) {
       var kind = kindOf(btn);
       var nodes = [];
-      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referente Departamental', parseStored(btn.dataset.clarity), true));
+      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referent Departamental', parseStored(btn.dataset.clarity), true));
       nodes.push(renderReport(kind.title, parseStored(btn.dataset.result), false, kind.pdfKind));
       if (kind.pdfKind) { // normativa, fidelidad y claridad (Referente): PDF anotado
         var tools = pdfTools(btn, kind, parseStored(btn.dataset.result));
@@ -599,7 +602,7 @@
         var again = document.createElement('button');
         again.type = 'button';
         again.className = 'btn btn-sm';
-        again.textContent = (kind === KINDS.duplicity || kind === KINDS.fidelity) ? 'Volver a comprobar' : 'Volver a analizar';
+        again.textContent = (kind === KINDS.duplicity || kind === KINDS.fidelity) ? 'Torna a comprovar' : 'Torna a analitzar';
         again.addEventListener('click', function () { runReport(btn); });
         var foot = document.createElement('div');
         foot.className = 'report-footer';
@@ -623,7 +626,7 @@
 
     function setDone(btn, done) {
       btn.dataset.done = done ? 'true' : 'false';
-      btn.textContent = done ? (kindOf(btn).doneLabel || 'Ver informe') : kindOf(btn).label;
+      btn.textContent = done ? (kindOf(btn).doneLabel || 'Veure informe') : kindOf(btn).label;
     }
 
     function runReport(btn) {
@@ -632,7 +635,7 @@
       clearReport(btn);
       btn.disabled = true;
       btn.classList.add('loading');
-      btn.textContent = 'Cargando…';
+      btn.textContent = 'Carregant…';
 
       function fail(message) {
         setDone(btn, wasDone);
@@ -640,17 +643,17 @@
       }
 
       fetch(btn.dataset.url, { method: 'POST', headers: { 'Accept': 'application/json' } })
-        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Respuesta no válida del servidor.' }; }); })
+        .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'Resposta no vàlida del servidor.' }; }); })
         .then(function (data) {
           if (data.ok) {
             btn.dataset.result = JSON.stringify(data[kind.key]); // objeto (JSON) o texto
             setDone(btn, true);
             showReport(btn);
           } else {
-            fail(data.error || 'No se pudo completar la operación.');
+            fail(data.error || 'No s\'ha pogut completar l\'operació.');
           }
         })
-        .catch(function () { fail('Error de red: no se pudo contactar con el servidor.'); })
+        .catch(function () { fail('Error de xarxa: no s\'ha pogut contactar amb el servidor.'); })
         .then(function () { btn.disabled = false; btn.classList.remove('loading'); });
     }
 
@@ -664,34 +667,30 @@
   })();
 
   // Columnas redimensionables con persistencia en localStorage (Vanilla JS).
+  // Los anchos son porcentajes que suman 100: la tabla ocupa siempre el ancho disponible (sin scroll lateral)
+  // y al arrastrar un tirador el espacio se reparte con la columna vecina.
   document.addEventListener('DOMContentLoaded', function () {
-    var STORAGE_KEY = 'bcac.dashboard.colWidths';
-    var MIN_WIDTH = 120; // coincide con el min-width de th/td en CSS
-    var DEFAULTS = [300, 200, 200, 180, 120, 120, 120, 240, 320]; // px por columna
+    var STORAGE_KEY = 'bcac.dashboard.colWidths.v4'; // v4: anchos en % (v3: otro reparto de columnas)
+    var MIN_PX = 60; // ancho mínimo de una columna al arrastrar
+    var DEFAULTS = [13, 7, 7, 10, 6, 5, 9, 10, 8, 11, 14]; // % por columna (11 columnas, suman 100)
     var tables = document.querySelectorAll('.table-wrap table');
     var widths = DEFAULTS.slice();
 
     try {
-      var saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}');
-      Object.keys(saved).forEach(function (i) {
-        var w = Number(saved[i]);
-        if (i < widths.length && w >= MIN_WIDTH) widths[i] = w;
-      });
+      var saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || 'null');
+      var sum = saved && saved.length === DEFAULTS.length ? saved.reduce(function (a, b) { return a + Number(b); }, 0) : 0;
+      if (sum > 99 && sum < 101 && saved.every(function (w) { return Number(w) > 0; })) widths = saved.map(Number);
     } catch (e) { /* localStorage no disponible o JSON inválido: se usan los valores por defecto */ }
 
     function applyWidths() {
-      var total = widths.reduce(function (a, b) { return a + b; }, 0);
       tables.forEach(function (table) {
-        table.querySelectorAll('col').forEach(function (col, i) { col.style.width = widths[i] + 'px'; });
-        table.style.width = total + 'px';
+        table.querySelectorAll('col').forEach(function (col, i) { col.style.width = widths[i] + '%'; });
       });
     }
 
     function save() {
       try {
-        var out = {};
-        widths.forEach(function (w, i) { out[i] = Math.round(w); });
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(out));
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(widths.map(function (w) { return Math.round(w * 10) / 10; })));
       } catch (e) { /* ignorar */ }
     }
 
@@ -709,12 +708,17 @@
         handle.addEventListener('pointerdown', function (ev) {
           ev.preventDefault();
           handle.setPointerCapture(ev.pointerId);
-          var startX = ev.clientX, startW = widths[i];
+          var j = i + 1 < widths.length ? i + 1 : i - 1; // la columna vecina cede o recibe el espacio
+          var startX = ev.clientX, startI = widths[i], startJ = widths[j];
+          var pxPerPct = table.offsetWidth / 100, minPct = MIN_PX / pxPerPct;
           handle.classList.add('dragging');
           document.body.classList.add('col-resizing');
 
           function move(e) {
-            widths[i] = Math.max(MIN_WIDTH, startW + e.clientX - startX);
+            var d = (e.clientX - startX) / pxPerPct;
+            d = Math.max(minPct - startI, Math.min(startJ - minPct, d));
+            widths[i] = startI + d;
+            widths[j] = startJ - d;
             applyWidths();
           }
           function end() {

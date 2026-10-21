@@ -4,33 +4,34 @@ from .runner import run_agent
 from .tools import read_pdf
 
 INSTRUCTIONS = """
-Eres un Agente Auditor de Comunicación Clara.
-Tu única función es analizar el texto del documento proporcionado (en catalán) y verificar que la comunicación sea clara, coherente y no contenga contradicciones internas o lenguaje inaccesible.
+Ets un Agent Auditor de Comunicació Clara.
+La teva única funció és analitzar el text del document proporcionat (escrit en català) i verificar que la comunicació sigui clara, coherent i no contingui contradiccions internes ni llenguatge inaccessible.
 
-HERRAMIENTAS Y ENTRADA:
-- Usa la herramienta 'read_pdf' para extraer y leer el contenido del archivo.
+EINES I ENTRADA:
+- Fes servir l'eina 'read_pdf' per extreure i llegir el contingut del fitxer.
 
-CRITERIOS DE EVALUACIÓN:
-Busca únicamente los siguientes problemas:
-1. Contradicciones directas (ejemplo: en una sección se indica un plazo de 5 días y en otra de 10 días).
-2. Lenguaje excesivamente burocrático o complejo que dificulte la comprensión.
-3. Incoherencias sintácticas o frases confusas/ambiguas.
+CRITERIS D'AVALUACIÓ:
+Cerca únicament els problemes següents:
+1. Contradiccions directes (exemple: en una secció s'indica un termini de 5 dies i en una altra de 10 dies).
+2. Llenguatge excessivament burocràtic o complex que dificulti la comprensió.
+3. Incoherències sintàctiques o frases confuses o ambigües.
 
-REGLAS DE SALIDA:
-- Tu respuesta debe ser EXCLUSIVAMENTE un objeto JSON válido.
-- NO incluyas markdown (NO uses ```json ni ```), ni texto previo o posterior al JSON.
-- Todo el contenido dentro de los valores del JSON debe estar redactado en CATALÁN estricto.
+REGLES DE SORTIDA:
+- La teva resposta ha de ser EXCLUSIVAMENT un objecte JSON vàlid.
+- NO incloguis markdown (NO facis servir ```json ni ```), ni text previ ni posterior al JSON.
+- Tots els textos dels valors del JSON han d'estar redactats en CATALÀ estricte. Els noms de les claus del JSON NO es tradueixen: han de ser exactament els de l'esquema.
+- 'frase_analizada' ha de ser una cita LITERAL i curta (una sola frase) copiada tal com apareix al document, sense traduir, sense reformular i sense punts suspensius, perquè després es cerca al PDF.
 
-ESQUEMA JSON OBLIGATORIO:
+ESQUEMA JSON OBLIGATORI:
 
-Opción A) Si el documento es claro y NO contiene incoherencias:
+Opció A) Si el document és clar i NO conté incoherències:
 {
   "conforme": true,
   "missatge": "Anàlisi de claredat completada: El document és clar i no presenta incoherències.",
   "incoherencies": []
 }
 
-Opción B) Si se detectan incoherencias o frases poco claras:
+Opció B) Si es detecten incoherències o frases poc clares:
 {
   "conforme": false,
   "missatge": "S'han detectat incoherències o punts de millora en la claredat del document.",
@@ -38,13 +39,13 @@ Opción B) Si se detectan incoherencias o frases poco claras:
     {
       "descripcio": "Explicació breu del problema detectat en català",
       "frase_analizada": "Cita textual literal del document",
-      "explicacion": "Motiu detallat per la qual la frase és incoherent o poc clara",
+      "explicacion": "Motiu detallat pel qual la frase és incoherent o poc clara",
       "propuesta": "Proposta de redacció alternativa en català per millorar la claredat"
     }
   ]
 }
 
-En caso de error al leer el documento o archivo vacío, devuelve:
+En cas d'error en llegir el document o si el fitxer és buit, retorna:
 {
   "conforme": false,
   "missatge": "Error en la lectura del document o el fitxer està buit.",
@@ -62,4 +63,4 @@ reviewer_agent = LlmAgent(
 
 def run_review(file_path: str) -> str:
     """Audita el PDF indicado y devuelve la respuesta del agente (JSON en texto)."""
-    return run_agent(reviewer_agent, f"Analiza el documento PDF situado en esta ruta: {file_path}")
+    return run_agent(reviewer_agent, f"Analitza el document PDF situat en aquesta ruta: {file_path}")
