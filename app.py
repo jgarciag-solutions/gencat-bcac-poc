@@ -3,7 +3,6 @@ import json
 import os
 import re
 import threading
-import uuid
 from datetime import date, datetime, timedelta
 from functools import wraps
 
@@ -29,6 +28,8 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
 DOCUMENTS_FILE = os.path.join(UPLOAD_FOLDER, "documents.json")
 DOCS_LOCK = threading.RLock()
+ID_COUNTER_FILE = os.path.join(UPLOAD_FOLDER, "id_counter.json")  # último número de ID emitido (nunca se reutiliza)
+ID_RE = re.compile(r"^BCAC-[AB]-(\d+)$")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "vectores"), exist_ok=True)
 
@@ -168,6 +169,8 @@ def write_json(docs):
 
 def normalize(doc):
     """Completa con valores por defecto los campos que falten en un registro."""
+    if "title" in doc:  # campo renombrado: title -> denominacio (registros anteriores)
+        doc.setdefault("denominacio", doc.pop("title"))
     doc.setdefault("content_type", "Base")
     doc.setdefault("idioma", None)
     doc.setdefault("tipologia", [])
@@ -181,6 +184,7 @@ def normalize(doc):
     doc.setdefault("contenidos_relacionados", [])
     doc.setdefault("version", 1)
     doc.setdefault("observations", "")
+    doc.setdefault("rechazado_por_rol", "")  # rol (pestaña) desde el que se devolvió el documento
     doc.setdefault("analysis_result", None)
     doc.setdefault("analysis_done", False)
     doc.setdefault("referente_analysis_result", None)
@@ -243,6 +247,30 @@ def login_required(view):
     return wrapped
 
 
+def next_document_id(content_type, docs):
+    """ID automático `BCAC-B-0001`, `BCAC-A-0002`…: la letra indica Base (B) o Adaptat (A) y el número es una
+    secuencia única, creciente y sin reutilizar. Se guarda el último número emitido para que retirar documentos no
+    libere números; como red de seguridad también se respeta el mayor número presente en `docs`.
+    Referenciat se trata como Base, igual que en el resto de la aplicación."""
+    letter = "A" if content_type == "Adaptat" else "B"
+    with DOCS_LOCK:
+        try:
+            with open(ID_COUNTER_FILE, encoding="utf-8") as fh:
+                last = int(json.load(fh).get("last", 0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            last = 0
+        present = max((int(m.group(1)) for d in docs if (m := ID_RE.match(str(d.get("id", ""))))), default=0)
+        number = max(last, present) + 1
+        try:
+            tmp = ID_COUNTER_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"last": number}, fh)
+            os.replace(tmp, ID_COUNTER_FILE)
+        except OSError:
+            app.logger.exception("No se pudo guardar el contador de IDs; se usará el mayor ID presente.")
+    return f"BCAC-{letter}-{number:04d}"
+
+
 def find_doc(docs, doc_id):
     return next((d for d in docs if d["id"] == doc_id), None)
 
@@ -270,6 +298,11 @@ def next_status(doc):
 
 def can_advance(doc):
     return next_status(doc) is not None
+
+
+def role_of_status(status):
+    """Rol (nombre de la pestaña) que actúa sobre los documentos en ese estado."""
+    return next((t["role"] for t in TABS if t["status"] == status), "")
 
 
 def tab_anchor(status):
@@ -481,7 +514,7 @@ def save_document_update(doc_id, file, fields, user, edit):
             return None
         if new_name:
             if filename_exists(new_name, docs, exclude_id=doc_id):
-                flash("El fitxer ja s'ha pujat anteriorment", "warning")
+                flash("El fitxer ja s'ha pujat anteriorment", "error")
                 return None
             file.save(path)  # si se llama igual que el actual, lo sobrescribe
 
@@ -514,7 +547,7 @@ def save_document_update(doc_id, file, fields, user, edit):
         if not edit:
             doc["version"] = int(doc.get("version", 1)) + 1
             doc["status"] = EDITOR_STATE[doc["content_type"]]
-            doc["observations"] = ""
+            doc["observations"] = doc["rechazado_por_rol"] = ""
             doc["fecha_publicacion"] = doc["fecha_revision_prevista"] = None  # se rellenan al volver a publicar
             reset_ai_analysis(doc)
         doc["updated_by"] = user["username"]
@@ -524,7 +557,7 @@ def save_document_update(doc_id, file, fields, user, edit):
             app.logger.exception("No se pudo guardar documents.json al actualizar %s", doc_id)
             flash("No s'han pogut desar els canvis. Torna-ho a provar.", "error")
             return None
-        status, version, title = doc["status"], doc["version"], doc["title"]
+        status, version, title = doc["status"], doc["version"], doc["denominacio"]
 
     for old in old_paths:
         try:
@@ -573,7 +606,7 @@ def upload():
             flash("Només es pot versionar un document publicat.", "error")
             return redirect(url_for("dashboard") + tab_anchor(S_PUB))
         if request.method == "GET":
-            form = {"title": target_doc["title"], "content_type": target_doc["content_type"],
+            form = {"denominacio": target_doc["denominacio"], "content_type": target_doc["content_type"],
                     "idioma": target_doc.get("idioma") or "",
                     "canal": target_doc.get("canal") or "",
                     "taxonomy": target_doc["taxonomy"][0] if target_doc["taxonomy"] else ""}
@@ -585,7 +618,7 @@ def upload():
     if request.method == "POST":
         form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "idioma", "canal")}
         # Familia «Identificación»: todos sus campos son obligatorios.
-        form["title"] = request.form.get("titulo", "").strip()
+        form["denominacio"] = request.form.get("denominacio", "").strip()
         form["content_type"] = (target_doc["content_type"] if target_doc  # el tipo no cambia al versionar ni al editar
                                 else request.form.get("tipo_contenido", "").strip())
         selected_tipologia = list(dict.fromkeys(request.form.getlist("tipologia")))
@@ -595,8 +628,8 @@ def upload():
         selected_related = list(dict.fromkeys(request.form.getlist("contenidos_relacionados")))
         file = request.files.get("file")
         errors = []
-        if not form["title"]:
-            errors.append("Falta el camp obligatori «Títol».")
+        if not form["denominacio"]:
+            errors.append("Falta el camp obligatori «Denominació».")
         if not form["content_type"]:
             errors.append("Falta el camp obligatori «Tipus de contingut».")
         if not form["idioma"]:
@@ -639,6 +672,8 @@ def upload():
             else:
                 source = selected_sources
                 taxonomy = list(dict.fromkeys(t for i in source for t in available[i]["taxonomy"]))
+                # El departamento tampoco se elige: se hereda de las unidades base (unión sin duplicados).
+                departments = list(dict.fromkeys(dep for i in source for dep in available[i]["departamentos_competentes"]))
             if not form["canal"]:
                 errors.append("Falta el camp obligatori «Canal».")
             elif form["canal"] not in CANALES:
@@ -657,7 +692,7 @@ def upload():
                 flash(e, "error")
             return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, target_doc), 400
         elif target_doc:
-            fields = {"title": form["title"], "idioma": form["idioma"], "tipologia": selected_tipologia,
+            fields = {"denominacio": form["denominacio"], "idioma": form["idioma"], "tipologia": selected_tipologia,
                       "taxonomy": taxonomy, "departamentos_competentes": departments,
                       "unidades_base_origen": source, "canal": canal,
                       "contenidos_relacionados": selected_related}
@@ -675,15 +710,15 @@ def upload():
                     if not duplicate:
                         file.save(path)
                 if duplicate:
-                    flash("El fitxer ja s'ha pujat anteriorment", "warning")
+                    flash("El fitxer ja s'ha pujat anteriorment", "error")
                 else:
-                    doc_id = uuid.uuid4().hex[:8]
+                    doc_id = next_document_id(form["content_type"], load_documents())
                     # SimHash y embeddings (red) fuera del bloqueo; nunca bloquea la subida si fallan.
                     simhash, vector_file = process_document(path, doc_id)
                     record = {
                         "id": doc_id,
                         "filename": filename,
-                        "title": form["title"],
+                        "denominacio": form["denominacio"],
                         "idioma": form["idioma"],
                         "tipologia": selected_tipologia,
                         "taxonomy": taxonomy,
@@ -696,6 +731,7 @@ def upload():
                         "content_type": form["content_type"],
                         "version": 1,
                         "observations": "",
+                        "rechazado_por_rol": "",
                         "analysis_result": None,
                         "analysis_done": False,
                         "referente_analysis_result": None,
@@ -762,12 +798,12 @@ def avanzar_estado(doc_id):
             flash("Aquest document no pot avançar des del seu estat actual.", "error")
             return None
         doc["status"] = new
-        doc["observations"] = ""
+        doc["observations"] = doc["rechazado_por_rol"] = ""
         if new == S_PUB:
             today = date.today()
             doc["fecha_publicacion"] = today.isoformat()
             doc["fecha_revision_prevista"] = (today + timedelta(days=dias_revision_prevista())).isoformat()
-        return f"«{doc['title']}» avançat a: {new}.", "success"
+        return f"«{doc['denominacio']}» avançat a: {new}.", "success"
     return change_document(doc_id, action)
 
 
@@ -783,10 +819,12 @@ def rechazar(doc_id):
         if not reason:
             flash("Has d'indicar el motiu de la devolució.", "error")
             return None
+        role = role_of_status(doc["status"])  # rol que rechaza, antes de cambiar el estado
         doc["status"] = EDITOR_STATE.get(doc["content_type"], S_ED)
         doc["observations"] = reason
+        doc["rechazado_por_rol"] = role
         reset_ai_analysis(doc)
-        return f"«{doc['title']}» retornat a: {doc['status']}.", "warning"
+        return f"«{doc['denominacio']}» rebutjat per {role} i retornat a: {doc['status']}.", "warning"
     return change_document(doc_id, action)
 
 
@@ -1023,7 +1061,7 @@ def save_fidelity_result(doc_id, result):
     return jsonify(ok=True, fidelity_analysis_result=result)
 
 
-ANNOTATED_RE = re.compile(r"[0-9a-f]{8}(_referente)?_annotated\.pdf")
+ANNOTATED_RE = re.compile(r"(?:BCAC-[AB]-\d+|[0-9a-f]{8})(_referente)?_annotated\.pdf")  # ID actual o anterior (8 hex)
 
 
 def incoherencias_of(result):

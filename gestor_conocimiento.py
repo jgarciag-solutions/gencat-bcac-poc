@@ -79,7 +79,7 @@ def _load_centroid(path: str):
 
 
 def _label(doc) -> str:
-    return f"«{doc.get('title', '(sense títol)')}» (ID: {doc['id']})"
+    return f"«{doc.get('denominacio', '(sense denominació)')}» (ID: {doc['id']})"
 
 
 def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vectores",

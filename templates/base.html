@@ -23,10 +23,12 @@
   </header>
   {% endif %}
 
-  {% with messages = get_flashed_messages(with_categories=true) %}
-  {% if messages %}
+  {# Solo se muestran los errores (rojo). Los avisos de éxito (verde) y de información (amarillo) no se pintan;
+     get_flashed_messages los consume igualmente, así que no se acumulan para la pantalla siguiente. #}
+  {% with errors = get_flashed_messages(with_categories=true) | selectattr(0, 'equalto', 'error') | list %}
+  {% if errors %}
   <section class="flashes" aria-live="polite">
-    {% for category, message in messages %}
+    {% for category, message in errors %}
     <div class="flash flash-{{ category }}" role="alert">{{ message }}</div>
     {% endfor %}
   </section>

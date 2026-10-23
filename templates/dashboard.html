@@ -35,7 +35,7 @@
         <table>
           <thead>
             <tr>
-              <th>Títol</th>
+              <th>Denominació</th>
               <th>ID</th>
               <th>Tipus de contingut</th>
               <th>Tipologia</th>
@@ -52,13 +52,13 @@
             {% for d in tab.docs %}
             <tr>
               <td>
-                <a class="doc-title" href="{{ url_for('download', doc_id=d.id) }}">{{ d.title }}</a>
+                <a class="doc-title" href="{{ url_for('download', doc_id=d.id) }}">{{ d.denominacio }}</a>
                 <small>{{ d.filename }}</small>
                 {% if d.observations %}
-                <div class="obs-alert" role="alert"><strong>Retornat:</strong> {{ d.observations }}</div>
+                <div class="obs-alert" role="alert"><strong>Retornat{% if d.rechazado_por_rol %} per {{ d.rechazado_por_rol }}{% endif %}:</strong> {{ d.observations }}</div>
                 {% endif %}
               </td>
-              <td>{{ d.id }}</td>
+              <td style="white-space: nowrap;">{{ d.id }}</td>
               <td>{{ d.content_type }}</td>
               <td>{{ d.tipologia | join(', ') or '—' }}</td>
               <td>{{ d.idioma or '—' }}</td>
@@ -115,7 +115,7 @@
                   {% if tab.status in validation_states %}
                   <button type="button" class="btn btn-danger btn-sm js-reject"
                           data-action="{{ url_for('rechazar', doc_id=d.id) }}"
-                          data-title="{{ d.title }}">Rebutja</button>
+                          data-title="{{ d.denominacio }}">Rebutja</button>
                   {% endif %}
                   {% if tab.slug == 'publicats' %}
                   <a href="{{ url_for('upload', versionar=d.id) }}" class="btn btn-outline-secondary btn-sm">Crea una nova versió</a>

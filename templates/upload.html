@@ -7,7 +7,7 @@
       <h1>{{ 'Edita el document' if edit_mode else ('Crea una nova versió' if target_doc else 'Puja un document') }}</h1>
       {% if edit_mode %}
       <p>Els canvis es desen sobre el mateix document: no canvia de versió ni d'estat. Quan acabis, aprova'l des de la safata del teu editor.</p>
-      {% if target_doc.observations %}<div class="obs-alert" role="alert"><strong>Retornat:</strong> {{ target_doc.observations }}</div>{% endif %}
+      {% if target_doc.observations %}<div class="obs-alert" role="alert"><strong>Retornat{% if target_doc.rechazado_por_rol %} per {{ target_doc.rechazado_por_rol }}{% endif %}:</strong> {{ target_doc.observations }}</div>{% endif %}
       {% elif target_doc %}
       <p>Es crearà la versió {{ target_doc.version + 1 }} i el document tornarà a la safata del seu editor.</p>
       {% else %}
@@ -31,8 +31,8 @@
           <legend class="family-legend">Identificació</legend>
           <div class="form-grid">
             <div class="field full">
-              <label for="titulo">Títol</label>
-              <input type="text" name="titulo" id="titulo" required value="{{ form.get('title', '') }}">
+              <label for="denominacio">Denominació</label>
+              <input type="text" name="denominacio" id="denominacio" required value="{{ form.get('denominacio', '') }}">
             </div>
             <div class="field">
               <label for="tipo_contenido">Tipus de contingut</label>
@@ -57,10 +57,12 @@
             </div>
             <div class="field">
               <label for="idioma">Idioma</label>
+              {# Editor Base: català per defecte si l'usuari encara no n'ha triat cap #}
+              {% set idioma_sel = form.get('idioma') or ('Català' if origen == 'editor-departamental' else '') %}
               <select name="idioma" id="idioma" required>
-                <option value="" disabled {{ 'selected' if not form.get('idioma') }}>Selecciona…</option>
+                <option value="" disabled {{ 'selected' if not idioma_sel }}>Selecciona…</option>
                 {% for i in idiomas %}
-                <option value="{{ i }}" {{ 'selected' if form.get('idioma') == i }}>{{ i }}</option>
+                <option value="{{ i }}" {{ 'selected' if idioma_sel == i }}>{{ i }}</option>
                 {% endfor %}
               </select>
             </div>
@@ -99,12 +101,18 @@
               <select id="unidades_base_origen" name="unidades_base_origen" multiple size="{{ [base_docs | length, 3] | max if base_docs else 3 }}" disabled>
                 {% for d in base_docs %}
                 <option value="{{ d.id }}" data-taxonomy='{{ d.taxonomy | tojson }}'
-                        {{ 'selected' if d.id in selected_sources }}>{{ d.title }} (v{{ d.version }})</option>
+                        data-departments='{{ (d.departamentos_competentes or []) | tojson }}'
+                        {{ 'selected' if d.id in selected_sources }}>{{ d.denominacio }} (v{{ d.version }})</option>
                 {% endfor %}
               </select>
               <span class="hint">Mantén premut ⌘ (Mac) o Ctrl per seleccionar-ne diverses.</span>
               <span class="field-error" id="source-empty" role="alert" hidden>No hi ha documents base publicats disponibles per adaptar</span>
               <span class="field-error" id="unidad-error" role="alert" hidden>Has de seleccionar almenys una unitat base d'origen.</span>
+            </div>
+            <div class="field full" id="field-inherited-dep" hidden>
+              <label for="inherited-departments">Departament heretat</label>
+              <textarea id="inherited-departments" class="readonly" rows="2" readonly placeholder="S'emplenarà en seleccionar les fonts originals"></textarea>
+              <span class="hint">Unió (sense duplicats) dels departaments competents de les fonts seleccionades. No és editable.</span>
             </div>
             <div class="field" id="container_canal" hidden>
               <label for="canal">Canal <small>(només Adaptat)</small></label>
@@ -123,7 +131,7 @@
                 {% for d in published_docs %}
                 <label class="tipologia-item">
                   <input type="checkbox" name="contenidos_relacionados" value="{{ d.id }}" {{ 'checked' if d.id in selected_related }}>
-                  {{ d.title }}
+                  {{ d.denominacio }}
                 </label>
                 {% endfor %}
               </div>
@@ -176,6 +184,8 @@
     var canal = document.getElementById('canal');
     var inhGroup = document.getElementById('field-inherited');
     var inherited = document.getElementById('inherited-taxonomy');
+    var inhDepGroup = document.getElementById('field-inherited-dep');
+    var inheritedDeps = document.getElementById('inherited-departments');
     var submit = form.querySelector('button[type="submit"]');
 
     function show(group, visible) { group.hidden = !visible; }
@@ -184,14 +194,18 @@
       if (container) container.classList.toggle('has-error', on);
     }
 
-    // Unión sin duplicados de data-taxonomy (array JSON) de las opciones seleccionadas.
-    function updateInherited() {
+    // Unión sin duplicados de un atributo data-* (array JSON) de las opciones seleccionadas.
+    function unionOf(attr) {
       var all = [];
       Array.prototype.forEach.call(src.selectedOptions, function (o) {
-        try { JSON.parse(o.dataset.taxonomy || '[]').forEach(function (t) { if (all.indexOf(t) < 0) all.push(t); }); }
-        catch (e) { /* data-taxonomy inválido: se ignora */ }
+        try { JSON.parse(o.dataset[attr] || '[]').forEach(function (v) { if (all.indexOf(v) < 0) all.push(v); }); }
+        catch (e) { /* atributo inválido: se ignora */ }
       });
-      inherited.value = all.join('\n');
+      return all;
+    }
+    function updateInherited() {
+      inherited.value = unionOf('taxonomy').join('\n');
+      inheritedDeps.value = unionOf('departments').join('\n');
     }
 
     // Visibilidad según el tipo de contenido: un campo oculto se deshabilita (ni se envía ni se valida).
@@ -212,6 +226,7 @@
       canal.disabled = !adapted;
       canal.required = adapted;
       show(inhGroup, adapted);
+      show(inhDepGroup, adapted);
 
       var noSources = adapted && src.options.length === 0;
       srcEmpty.hidden = !noSources;

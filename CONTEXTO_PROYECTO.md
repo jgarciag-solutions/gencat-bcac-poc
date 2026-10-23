@@ -144,9 +144,9 @@ Si el JSON está corrupto se renombra a `documents.json.corrupt` y se reinicia c
 
 | Campo | Tipo | Origen / significado |
 |---|---|---|
-| `id` | str (8 hex) | `uuid.uuid4().hex[:8]` al subir |
+| `id` | str (`BCAC-B-0001`) | `next_document_id()` al subir: `BCAC-` + `B` (Base/Referenciat) o `A` (Adaptat) + secuencia única de 4 cifras. El último número emitido se guarda en `uploads/id_counter.json`, así que no se reutilizan aunque se retiren documentos |
 | `filename` | str | Nombre guardado en `uploads/` (`secure_filename`, **sin prefijo**; único) |
-| `title` | str | Formulario `titulo` |
+| `denominacio` | str | Formulario `denominacio` (antes `title`; `normalize()` migra los registros antiguos) |
 | `idioma` | str | `"Català"` o `"Castellà"` |
 | `tipologia` | list[str] | Subconjunto de `TIPOLOGIAS` (≥ 1) |
 | `taxonomy` | list[str] | Base: `[taxonomía elegida]`. Adaptat: unión (sin duplicados) de las de sus unidades base. Rutas `N1 > N2 > N3` |
@@ -446,7 +446,7 @@ compartido: se sobrescribe).
   el campo de taxonomía. Un `<script>` gestiona la visibilidad según `tipo_contenido`.
 
 ### 12.2 Dashboard: estructura de la tabla
-Columnas (11, en este orden; cabeceras en catalán: Títol, ID, Tipus de contingut, Tipologia, Idioma, Versió, Departament, Taxonomia, Publicació, Estat, Accions): Título (enlace de descarga + nombre de archivo + alerta roja `.obs-alert` con la devolución si procede), ID, Tipo de contenido, Tipología (lista separada por comas), Idioma, Versión (`vN`),
+Columnas (11, en este orden; cabeceras en catalán: Denominació, ID, Tipus de contingut, Tipologia, Idioma, Versió, Departament, Taxonomia, Publicació, Estat, Accions): Título (enlace de descarga + nombre de archivo + alerta roja `.obs-alert` con la devolución si procede), ID, Tipo de contenido, Tipología (lista separada por comas), Idioma, Versión (`vN`),
 Departamento, Taxonomía, Publicación (`fecha_publicacion` y, debajo, «Revisió: `fecha_revision_prevista`» si existe; «—» si no está publicado; se muestran como `DD-MM-YYYY` con el filtro Jinja `fecha_es`, el JSON conserva `YYYY-MM-DD`), Estado (badge), Acciones (`.actions`).
 Los campos vacíos se muestran como «—». Ya no se muestra la «Fuente original» (`unidades_base_origen` sigue en el JSON). Los botones se pintan con condiciones Jinja sobre `tab.status` (cadenas literales de estado) y `d.filename`.
 
