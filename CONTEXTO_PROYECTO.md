@@ -101,10 +101,11 @@ gencat-bcac-poc/
 ├── config.json               # Umbrales, modelo de embeddings, lista de departamentos
 ├── requirements.txt
 ├── .env / .env.example       # Claves (no versionar .env)
-├── .gitignore                # Ignora .venv, uploads/*, vectores/*, .env, __pycache__ (conserva .gitkeep)
+├── .gitignore                # Ignora .venv, uploads/*, vectores/*, logs/, .env, __pycache__ (conserva .gitkeep)
 ├── CONTEXTO_PROYECTO.md      # Este documento
 ├── agents/
-│   ├── runner.py             # Ejecutor síncrono de un agente ADK (run_agent)
+│   ├── runner.py             # Ejecutor síncrono de un agente ADK (run_agent); tope de 25 llamadas al modelo
+│   ├── schemas.py            # Esquemas Pydantic de salida de los 3 agentes (output_schema) y límite de tokens
 │   ├── tools.py              # Herramientas del LLM: read_pdf, read_all_normative_pdfs, read_multiple_pdfs
 │   ├── reviewer_agent.py     # Agente de claridad (pestaña Referente)  -> run_review()
 │   ├── normative_agent.py    # Agente normativo (Validador Finalista)  -> run_normative_review()
@@ -119,6 +120,7 @@ gencat-bcac-poc/
 │   └── img/ logo.png, logo_ayesa.png
 ├── uploads/                  # Archivos subidos + documents.json (BASE DE DATOS) + PDF anotados generados
 ├── vectores/                 # {doc_id}_vectors.json (embeddings por chunk)
+├── logs/ai_responses/        # (se crea al fallar) respuestas completas de la IA no interpretables; fuera de git
 └── normativa/                # PDF de leyes/normas que usa el agente normativo
 ```
 
@@ -227,8 +229,8 @@ Todas las acciones de avance se llaman «Aprovar» (`ACTION_LABEL`).
 
 | Pestaña (`role`) | `slug` | Muestra documentos en | Acciones y botones de IA |
 |---|---|---|---|
-| Editor Departamental | `editor-departamental` | `S_ED` | Aprovar, enlace «Puja un nou document» (`/upload?origen=editor-departamental`). Sin rechazar ni IA |
-| Editor Canal | `editor-canal` | `S_EC` | Aprovar, enlace «Puja un nou document» (`?origen=editor-canal`). Sin rechazar ni IA |
+| Editor Departamental | `editor-departamental` | `S_ED` | «Edita» (solo si el documento fue devuelto, es decir, tiene `observations`), Aprovar, enlace «Puja un nou document» (`/upload?origen=editor-departamental`). Sin rechazar ni IA |
+| Editor Canal | `editor-canal` | `S_EC` | «Edita» (solo si fue devuelto), Aprovar, enlace «Puja un nou document» (`?origen=editor-canal`). Sin rechazar ni IA |
 | Referent Departamental | `referent-departamental` | `S_RD` | Aprovar, Rebutja, «Analitzar amb IA» (claridad, solo PDF). Sin enlace de subida |
 | Validador Finalista | `validador-finalista` | `S_UF` | Aprovar, Rebutja, «Validació normativa» (solo PDF). Sin enlace de subida |
 | Gestor Coneixement Base | `gestor-coneixement-base` | `S_GCB` | Aprovar, Rebutja, «Detecció de duplicitats» |
@@ -244,6 +246,8 @@ Todas las filas tienen además «Veure Document Original» (si el archivo es pdf
   guarda `observations` y llama a `reset_ai_analysis(doc)`, que **reinicia los cuatro análisis de IA** (claridad —`analysis_*` y `referente_analysis_result`—, normativo, duplicidad y fidelidad).
 - **Versionar** (`GET/POST /upload?versionar=<id>`, ver 7.2): solo desde `S_PUB`. El enlace de la pestaña Publicados abre el formulario de alta con los datos precargados;
   al enviarlo se hace `version += 1`, el documento vuelve a `EDITOR_STATE[content_type]`, `observations = ""`, `fecha_publicacion` y `fecha_revision_prevista` a `null` (se rellenan al volver a publicar) y `reset_ai_analysis`. No existe ya la ruta `/versionar`.
+- **Editar** (`GET/POST /upload?editar=<id>`, ver 7.2.1): solo en `S_ED`/`S_EC` y **solo si el documento fue devuelto** (`observations` no vacío). Abre el mismo formulario que «nueva versión» con los datos precargados;
+  al guardar **no** cambia `version`, ni `status`, ni `observations` (el motivo de devolución se mantiene hasta «Aprovar», que lo vacía), ni toca los informes de IA (ya se reiniciaron al devolver).
 - **Retirar** (`/api/documents/retirar`): solo desde `S_PUB`; **borra** el registro, los archivos y las referencias (ver 7.6). No existe estado «Retirada»/«Archivo».
 - Tras cualquier acción de estado la app redirige a `/dashboard#<slug>` de la pestaña de origen (`tab_anchor`).
 
@@ -259,7 +263,7 @@ Orden de secciones del archivo:
    y `departamentos_competentes()` (lee `config.json`).
 3. **Persistencia**: `ensure_documents_file`, `write_json`, `normalize`, `load_documents`, `save_documents`.
 4. **Utilidades**: `allowed_file`, `current_user`, `login_required`, `find_doc`, `filename_exists`, `next_status`, `can_advance`,
-   `tab_anchor`, `published_base_docs`, `clean_and_parse_json`, `reset_ai_analysis`, `taxonomy_paths`, `inject_globals` (context processor: `user`, `STATES`). Filtro de plantilla `fecha_es` (ISO → `DD-MM-YYYY`).
+   `tab_anchor`, `published_base_docs`, `clean_and_parse_json`, `run_ai_json`, `dump_ai_response`, `reset_ai_analysis`, `taxonomy_paths`, `inject_globals` (context processor: `user`, `STATES`). Filtro de plantilla `fecha_es` (ISO → `DD-MM-YYYY`).
 5. **Rutas** (ver 7).
 
 ### Patrones que se repiten
@@ -267,7 +271,7 @@ Orden de secciones del archivo:
 - **`change_document(doc_id, action)`**: lee→localiza→ejecuta `action(doc, user)`→guarda→`flash`→redirige a la pestaña de origen. Lo usan
   `avanzar_estado` y `rechazar`. La `action` devuelve `(mensaje, categoría)` o `None` (no guarda).
 - **Rutas API de IA**: comprobar sesión (JSON 401) → documento (404) → estado válido (409) → archivo PDF existente → clave API (503)
-  → **ejecutar fuera del bloqueo** (llamada lenta) → `clean_and_parse_json` → si `error`: 502 sin guardar → **releer bajo el bloqueo**,
+  → **ejecutar fuera del bloqueo** (llamada lenta) → `run_ai_json` (agente + `clean_and_parse_json`, con **un reintento**) → si `error`: 502 sin guardar → **releer bajo el bloqueo**,
   guardar resultado y flag `*_done` → `jsonify(ok=True, <clave>=resultado)`.
 - **Errores en JSON** de las rutas `/api/...`: `{"ok": false, "error": "..."}` (la de retirar usa `{"success": false, "error": ...}`).
 - Los manejadores `413/403/404` hacen `flash` + redirección (no devuelven JSON).
@@ -284,7 +288,7 @@ Orden de secciones del archivo:
 | `GET/POST /` y `/login` | no | Login (`admin`/`gencat`). Si ya hay sesión redirige al dashboard |
 | `GET /logout` | no | Cierra sesión |
 | `GET /dashboard` | sí | Construye las filas (ver 7.1) y renderiza `dashboard.html` con `tabs` y `validation_states` |
-| `GET/POST /upload` | sí | Formulario de alta y su procesamiento (ver 7.2). Acepta `?origen=` (GET) o campo oculto `origen` (POST); `?versionar=<id>` / campo oculto `versionar_id` activan el modo «nueva versión» |
+| `GET/POST /upload` | sí | Formulario de alta y su procesamiento (ver 7.2). Acepta `?origen=` (GET) o campo oculto `origen` (POST); `?versionar=<id>` / campo oculto `versionar_id` activan el modo «nueva versión»; `?editar=<id>` / `editar_id` el modo «edición» de un documento devuelto |
 | `POST /avanzar_estado/<id>` | sí | Avanza al siguiente estado del flujo |
 | `POST /rechazar/<id>` | sí | Form `motivo`; devuelve al editor del tipo y reinicia la IA |
 | `POST /api/documents/retirar/<id>` | API | Borrado físico + lógico + integridad referencial (ver 7.6) |
@@ -314,14 +318,16 @@ Campos del formulario: `file`, `titulo`, `tipo_contenido`, `idioma`, `tipologia`
 - Flujo de guardado: validar → bajo `DOCS_LOCK` comprobar duplicado y guardar el archivo → `process_document()` **fuera del bloqueo**
   (red) → releer, añadir el registro y guardar → `flash` (aviso amarillo si no hay vectores) → redirigir a `/dashboard`.
 
-### 7.2.1 Modo «nueva versión» (`save_new_version`)
-- `GET /upload?versionar=<id>`: si el documento no existe o no está `S_PUB`, `flash` de error y redirección a `/dashboard#publicats`. Si vale, renderiza `upload.html` con `version_doc` y el
+### 7.2.1 Modos «nueva versión» y «edición» (`save_document_update`)
+- `GET /upload?versionar=<id>`: si el documento no existe o no está `S_PUB`, `flash` de error y redirección a `/dashboard#publicats`. Si vale, renderiza `upload.html` con `target_doc` y el
   formulario precargado (`form`, `selected_*` salen del documento).
 - `POST` con `versionar_id`: el tipo de contenido se toma **del documento** (se ignora el enviado; el `<select>` va `disabled` y un hidden lo reenvía solo por comodidad). El archivo es **opcional**.
-  Las demás validaciones son las del alta. Si pasan, `save_new_version()` hace: (1) bajo `DOCS_LOCK` comprueba `S_PUB` y, si hay archivo, `filename_exists(nombre, docs, exclude_id=id)` y guarda el archivo
+  Las demás validaciones son las del alta. Si pasan, `save_document_update()` (`edit=False`) hace: (1) bajo `DOCS_LOCK` comprueba `S_PUB` y, si hay archivo, `filename_exists(nombre, docs, exclude_id=id)` y guarda el archivo
   (un nombre igual al actual lo sobrescribe); (2) `process_document()` fuera del bloqueo; (3) bajo el bloqueo relee, actualiza todos los campos, suma la versión, reinicia estado/observaciones/IA y **guarda el JSON primero**;
   (4) solo entonces borra los archivos antiguos (original si cambió de nombre, `{id}_annotated.pdf`, `{id}_referente_annotated.pdf` y el vector si no fue reemplazado: el vector nuevo se llama igual que el antiguo).
   Sin archivo nuevo no se borra nada. Redirige a `/dashboard#editor-departamental` o `#editor-canal` según el tipo.
+- **Edición** (`?editar=<id>`, `edit=True`): `can_update(doc, edit)` exige estado de editor y `observations` no vacío (si no, `flash` de error y vuelta a la bandeja). Mismo formulario, tipo bloqueado y archivo opcional con el mismo reemplazo (original, PDF anotados y vectores);
+  la diferencia es que **no** suma versión, no cambia el estado, no limpia `observations` y no reinicia la IA. Redirige a la pestaña del editor. El formulario muestra el motivo de la devolución.
 - `filename_exists(filename, docs, exclude_id=None)`: con `exclude_id` ignora el archivo del propio documento (en el JSON y en la carpeta).
 
 ### 7.3 Servicio de archivos
@@ -378,13 +384,18 @@ Respuesta `{success: true, message, deleted_id}`. Un Adaptat cuya base se retira
 ### 10.1 Infraestructura
 - `runner.py::run_agent(agent, prompt) -> str`: crea `InMemorySessionService` + `Runner`, una sesión nueva por llamada, ejecuta con `asyncio.run` y devuelve
   el texto de la respuesta final (error si está vacía). Es **síncrono** hacia fuera.
-- Modelo: `gemini-2.5-flash` en los tres agentes. Todos usan `LlmAgent(name, model, instruction, tools)`.
+- Modelo: `gemini-2.5-flash` en los tres agentes. Todos usan `LlmAgent(name, model, instruction, tools, output_schema, generate_content_config)`.
 - **Idioma de los prompts:** las `INSTRUCTIONS` y el mensaje de usuario de los tres agentes están escritos en **catalán** (los documentos y la normativa están en catalán) y exigen que **todos los textos de los valores del JSON salgan en catalán**.
   Los nombres de las claves JSON **no** se traducen (cada agente conserva las suyas, ver sección 13); el frontend y `pdf_annotator.py` dependen de ellas. Cada módulo tiene **una sola** definición de `INSTRUCTIONS`.
 - Los tres prompts piden que `frase_analizada` (y `texto_infrinjido`) sean citas **literales**, cortas y sin puntos suspensivos: `pdf_annotator.py` las busca tal cual en el PDF y, si no coinciden, no se pueden anotar.
 - Las herramientas (`tools.py`) siguen devolviendo sus errores y cabeceras en castellano (`ERROR: …`, `===== LEY / NORMATIVA: … =====`, `===== DOCUMENTO FUENTE: … =====`); los prompts hacen referencia a esas cabeceras para `fichero_fuente`.
-- Las respuestas se pasan por `clean_and_parse_json` (quita vallas ```` ```json ````, y si hay texto alrededor toma de la primera `{` a la última `}`).
-  Si no es JSON válido → `{"error": True, "mensaje": ...}` → las rutas devuelven 502 y **no** guardan el análisis como hecho.
+- **Salida estructurada (anti-JSON roto):** cada agente declara `output_schema` (Pydantic, en `agents/schemas.py`) junto con sus herramientas. ADK añade una herramienta interna `set_model_response`: el modelo entrega el resultado como llamada
+  a función, ADK valida los argumentos y devuelve `json.dumps(...)` de ellos, así que el JSON es siempre válido aunque las citas literales del PDF lleven comillas dobles o saltos de línea (causa típica de «JSON no válido»).
+  Si el modelo envía un objeto que no cumple el esquema, ADK le devuelve el error y reintenta; `runner.py` limita cada ejecución a `MAX_LLM_CALLS = 25` llamadas (por defecto serían 500) y al superarlo lanza una excepción que la ruta convierte en 502.
+  `GENERATION_CONFIG` fija `max_output_tokens = 32768` (en Gemini 2.5 cuentan también los tokens de razonamiento) para que los informes largos no queden cortados. Los esquemas deben mantener los nombres de campo de la sección 13.
+- **Red de seguridad en la aplicación:** `run_ai_json(run, *args, kind, doc_id)` ejecuta el agente y pasa la respuesta por `clean_and_parse_json` (quita vallas ```` ```json ````, toma de la primera `{` a la última `}`, acepta saltos de línea sin escapar
+  y comas finales). Si no se puede interpretar, **reintenta una vez**; si vuelve a fallar guarda la respuesta **completa** en `logs/ai_responses/<kind>_<id>_<fecha>.txt` (el log solo lleva la ruta; contiene texto de documentos, por eso `logs/` está en `.gitignore`)
+  y devuelve `{"error": True, "mensaje": ...}` → las rutas responden 502 y **no** guardan el análisis como hecho. Las excepciones del agente (red, cuota, clave, tope de llamadas) no se reintentan.
 
 ### 10.2 Herramientas (`tools.py`)
 | Función | Uso | Seguridad |
@@ -454,7 +465,7 @@ Bloques en orden:
    - Botones `.js-analyze`, `.js-normative`, `.js-duplicity`, `.js-fidelity`: si el análisis no está hecho hacen POST (estado «Cargando…»); si ya está hecho **alternan** la fila desplegable.
    - `renderAIReport(data, plain)` pinta el JSON (éxito `conforme`/`fiel` → `.alert-success`; si no `.alert-danger` con tarjetas `.incoherence-card`, bloque `.proposal` para `propuesta`,
      insignia `.page-badge`). `markdownToHtml` es un **conversor Markdown mínimo** (escapa HTML) para informes antiguos y el de duplicidades. `esc()` escapa todo.
-   - El dato de cada informe viaja en atributos `data-result`/`data-clarity` como **JSON** (`| tojson`, comillas simples); `parseStored` lo interpreta (objeto o texto).
+   - El dato de cada informe viaja en el atributo `data-result` como **JSON** (`| tojson`, comillas simples); `parseStored` lo interpreta (objeto o texto). Cada pestaña muestra **solo su propio informe**: en Validador Finalista ya no se antepone el informe de claridad del Referente Departamental (se quitó el atributo `data-clarity`; el parámetro `plain` de `renderAIReport`/`renderReport` queda sin uso).
 4. **Fila desplegable única por documento**: `ensureRow`/`existingRow`/`reportSlot`/`pruneRow`/`clearReport`/`insertRow`. Estructura: `<tr class="expandable-row"><td colspan><div class="report-container"/><div class="original-viewer"/>`.
 5. **Documento original**: `.btn-ver-original` → `toggleOriginal` (comprueba con `HEAD` que el archivo existe antes de incrustar un `<iframe>` de `/download/<id>`);
    si ya hay visor de PDF anotado, reutiliza ese mismo `iframe` (`swapOriginal`).
@@ -468,7 +479,7 @@ Bloques en orden:
 Convenciones del JS: ES5-ish con `var`, `fetch` + `.then`, errores **en línea** (sin `alert()` ni `confirm()` en las acciones de IA y retirar), todo texto dinámico se escapa.
 
 ### 12.4 JavaScript de `upload.html`
-- Con `version_doc` (modo nueva versión): título «Crea una nova versió», botón «Desa la nova versió», «Cancel·la» a `/dashboard#publicats`, `file` sin `required` con el nombre del archivo actual, select de tipo `disabled` + hidden `tipo_contenido`, hidden `versionar_id`.
+- Con `target_doc` (modo nueva versión o edición; `edit_mode` distingue): título «Crea una nova versió» / «Edita el document», botón «Desa la nova versió» / «Desa els canvis», «Cancel·la» a `/dashboard` + `back_anchor` (`#publicats` o la pestaña del editor), `file` sin `required` con el nombre del archivo actual, select de tipo `disabled` + hidden `tipo_contenido`, hidden `versionar_id` (o `editar_id` en edición).
 - El selector «Tipo de contenido» se filtra con `origen` (Jinja): `editor-canal` → solo Adaptat (preseleccionado); `editor-departamental` → solo Base (preseleccionado); sin origen → los tres.
 - `update()` muestra/oculta y habilita/deshabilita según `tipo_contenido` (los campos ocultos se **deshabilitan**: no se envían ni se validan):
   Base **y Referenciat** → bloque de departamentos y taxonomía manual; Adaptat → unidades base (selector múltiple), canal, y taxonomía heredada de solo lectura (`updateInherited`: unión de `data-taxonomy` de las opciones seleccionadas).
@@ -563,11 +574,11 @@ Qué archivos tocar según el tipo de cambio:
 | **Nuevo estado o nueva fase** | Constante `S_*`, `STATES`, `FLOWS`, `VALIDATION_STATES`, `TABS`, `ACTION_LABEL`, `EDITOR_STATE` en `app.py`; orden de `api_generate_annotated_pdf`; comparaciones literales en `dashboard.html`; `PUBLISHED_STATUS` en `gestor_conocimiento.py` si cambia «publicado»; estilo `badge-N` en CSS |
 | **Nueva pestaña** | Entrada en `TABS` (slug único) y, si procede, botones por estado en la plantilla; el JS de pestañas es genérico |
 | **Nuevo agente de IA** | Archivo en `agents/` (con `run_*`), herramienta en `tools.py` si hace falta, ruta `/api/...` siguiendo el patrón de la sección 6, campos `*_result`/`*_done` en `normalize()`, entrada en `KINDS` y botón en el dashboard; si genera hallazgos con frases: función en `pdf_annotator.py` y `kind` en `api_generate_annotated_pdf` |
-| **Cambiar un prompt** | El archivo del agente (`INSTRUCTIONS`, en catalán; mantener los nombres de clave del JSON) y, si cambian las claves, `renderAIReport` y `pdf_annotator.py` |
+| **Cambiar un prompt** | El archivo del agente (`INSTRUCTIONS`, en catalán) y, si cambian las claves del JSON, el esquema de `agents/schemas.py`, `renderAIReport` y `pdf_annotator.py` |
 | **Cambiar umbrales/modelo** | `config.json` (no requiere código) |
 | **Cambiar columnas de la tabla** | `<th>`/`<td>` en `dashboard.html`, `colspan` de la fila vacía (en HTML y en el JS de retirar), `DEFAULTS` y `STORAGE_KEY` del redimensionado |
 | **Cambiar reglas de validación del alta** | `upload()` en `app.py` (servidor, fuente de verdad) y el JS de `upload.html` (comodidad) |
-| **Cambiar el versionado** | `save_new_version()` y la rama `version_doc` de `upload()` en `app.py`; `version_doc` en `upload.html`; enlace en `dashboard.html` |
+| **Cambiar el versionado o la edición de devueltos** | `save_document_update()`, `can_update()` y la rama `target_doc` de `upload()` en `app.py`; `target_doc`/`edit_mode` en `upload.html`; enlaces en `dashboard.html` |
 | **Cambiar el borrado/retirada** | `api_retirar` (orden: JSON primero, luego archivos) y `.js-retirar` |
 
 Advertencias al instruir cambios:

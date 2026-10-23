@@ -3,11 +3,35 @@ import os
 
 import pdfplumber
 
+try:
+    import pymupdf  # PyMuPDF >= 1.24.3
+except ImportError:  # pragma: no cover
+    try:
+        import fitz as pymupdf
+    except ImportError:
+        pymupdf = None
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_FOLDER = os.path.join(PROJECT_ROOT, "uploads")
 NORMATIVE_FOLDER = os.path.join(PROJECT_ROOT, "normativa")
-MAX_CHARS = 100_000
+MAX_CHARS = 400_000  # manuales largos (p. ej. 114 págs. ≈ 160.000 caracteres): un corte antes de tiempo falsea la comparación
 MAX_NORMATIVE_CHARS = 600_000
+
+
+def extract_pages(path: str) -> list[str]:
+    """Texto de cada página del PDF.
+
+    Usa PyMuPDF, que respeta el orden de lectura de los PDF de diapositivas con cuadros solapados; pdfplumber los
+    desordena (mezcla letras de cuadros distintos y pierde líneas), así que solo queda como respaldo.
+    """
+    if pymupdf is not None:
+        try:
+            with pymupdf.open(path) as doc:
+                return [page.get_text() for page in doc]
+        except Exception:
+            pass  # PDF que PyMuPDF no abre: se intenta con pdfplumber
+    with pdfplumber.open(path) as pdf:
+        return [(page.extract_text() or "") for page in pdf.pages]
 
 
 def read_pdf(file_path: str) -> str:
@@ -26,8 +50,7 @@ def read_pdf(file_path: str) -> str:
     if not real.lower().endswith(".pdf") or not os.path.isfile(real):
         return "ERROR: el archivo no existe o no es un PDF."
     try:
-        with pdfplumber.open(real) as pdf:
-            text = "\n\n".join((page.extract_text() or "") for page in pdf.pages).strip()
+        text = "\n\n".join(extract_pages(real)).strip()
     except Exception as exc:  # PDF corrupto, protegido, etc.
         return f"ERROR: no se pudo leer el PDF ({exc})."
     if not text:
@@ -66,8 +89,7 @@ def read_all_normative_pdfs(folder_path: str = "normativa") -> str:
     parts, total = [], 0
     for name in names:
         try:
-            with pdfplumber.open(os.path.join(folder, name)) as pdf:
-                text = "\n".join((page.extract_text() or "") for page in pdf.pages).strip()
+            text = "\n".join(extract_pages(os.path.join(folder, name))).strip()
         except Exception as exc:  # PDF corrupto o protegido: se informa y se continúa
             text = f"[No se pudo leer este PDF: {exc}]"
         chunk = f"===== LEY / NORMATIVA: {name} =====\n{text or '[PDF sin texto extraíble]'}\n"
@@ -103,8 +125,7 @@ def read_multiple_pdfs(file_paths: list[str]) -> str:
             text = "[ERROR: el archivo no existe o no es un PDF.]"
         else:
             try:
-                with pdfplumber.open(real) as pdf:
-                    text = "\n".join((page.extract_text() or "") for page in pdf.pages).strip()
+                text = "\n".join(extract_pages(real)).strip()
             except Exception as exc:  # PDF corrupto o protegido: se informa y se continúa
                 text = f"[ERROR: no se pudo leer el PDF ({exc}).]"
             text = text or "[PDF sin texto extraíble]"

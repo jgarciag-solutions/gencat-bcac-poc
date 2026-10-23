@@ -10,10 +10,36 @@
     "Empresa i Treball",
     "Justicia i Qualitat Democratica",
     "Cultura",
-    "Salut", 
+    "Salut",
     "interiro i Securitat Publica",
     "Presidencia",
     "Esports"
   ],
-  "dias_revision_prevista": 150
+  "dias_revision_prevista": 150,
+  "agente_claridad_activo": true,
+  "agente_normativa_activo": true,
+  "agente_fidelidad_activo": true,
+  "embeddings_activos": true,
+  "agentes_ia": {
+    "defecto": {
+      "model": "gemini-2.5-flash",
+      "temperature": 0,
+      "top_p": null,
+      "seed": 42,
+      "thinking_budget": 2048,
+      "max_output_tokens": 32768
+    },
+    "normativa": {
+      "model": "gemini-2.5-pro",
+      "thinking_budget": 16384
+    },
+    "claridad": {
+      "model": "gemini-2.5-pro",
+      "thinking_budget": 8192
+    },
+    "fidelidad": {
+      "model": "gemini-2.5-pro",
+      "thinking_budget": 8192
+    }
+  }
 }

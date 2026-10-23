@@ -6,3 +6,4 @@ uploads/*
 .env
 vectores/*
 !vectores/.gitkeep
+logs/

@@ -77,6 +77,9 @@
                           data-filename="{{ d.filename }}"> Veure Document Original</button>
                   {% endif %}
                   {% set needs_normative = tab.slug == 'validador-finalista' %}
+                  {% if tab.slug in ('editor-departamental', 'editor-canal') and d.observations %}
+                  <a href="{{ url_for('upload', editar=d.id) }}" class="btn btn-outline-secondary btn-sm">Edita</a>
+                  {% endif %}
                   {% if d.can_advance %}
                   <form method="post" action="{{ url_for('avanzar_estado', doc_id=d.id) }}">
                     <button type="submit" class="btn btn-success btn-sm">{{ d.action }}</button>
@@ -87,8 +90,7 @@
                           data-url="{{ url_for('api_validate_normative', doc_id=d.id) }}"
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.normative_analysis_done else 'false' }}"
-                          data-result='{{ (d.normative_analysis_result | tojson) if d.normative_analysis_result else "" }}'
-                          data-clarity='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Veure informe' if d.normative_analysis_done else 'Validació normativa' }}</button>
+                          data-result='{{ (d.normative_analysis_result | tojson) if d.normative_analysis_result else "" }}'>{{ 'Veure informe' if d.normative_analysis_done else 'Validació normativa' }}</button>
                   {% endif %}
                   {% if tab.slug == 'gestor-coneixement-canal' %}
                   <button type="button" class="btn btn-sm js-fidelity"
@@ -108,7 +110,7 @@
                           data-url="{{ url_for('api_analyze', doc_id=d.id) }}"
                           data-done="{{ 'true' if d.analysis_done else 'false' }}"
                           data-annotate-url="{{ url_for('api_generate_annotated_pdf', doc_id=d.id) }}"
-                          data-result='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Veure informe' if d.analysis_done else 'Analitzar amb IA' }}</button>
+                          data-result='{{ ((d.referente_analysis_result or d.analysis_result) | tojson) if (d.referente_analysis_result or d.analysis_result) else "" }}'>{{ 'Veure informe' if d.analysis_done else 'Analitzar text amb IA' }}</button>
                   {% endif %}
                   {% if tab.status in validation_states %}
                   <button type="button" class="btn btn-danger btn-sm js-reject"
@@ -196,10 +198,10 @@
     var DANGER_RE = /incoher[eè]nci|contradicci|duplicitat detectada|contingut similar detectat|coincid[eè]ncia exacta/i;
     var FINDING_RE = /^\s*\*\*\d+\./m;
     var KINDS = {
-      analyze: { key: 'referente_analysis_result', pdfKind: 'referente', label: 'Analitzar amb IA', title: 'Auditoria de claredat (IA)' },
-      normative: { key: 'normative_analysis_result', pdfKind: 'normative', label: 'Validació normativa', title: 'Validació normativa (IA)' },
-      duplicity: { key: 'duplicity_result', label: 'Detecció de duplicitats', title: 'Detecció de duplicitats' },
-      fidelity: { key: 'fidelity_analysis_result', pdfKind: 'fidelity', label: 'Comprovar Fidelitat', doneLabel: 'Veure Informe Fidelitat', title: 'Comprovació de fidelitat (IA)' }
+      analyze: { key: 'referente_analysis_result', pdfKind: 'referente', label: 'Analitzar text amb IA', title: 'Auditoria de claredat (IA)', againLabel: 'Torna a analitzar' },
+      normative: { key: 'normative_analysis_result', pdfKind: 'normative', label: 'Validació normativa', title: 'Validació normativa (IA)', againLabel: 'Torna a validar' },
+      duplicity: { key: 'duplicity_result', label: 'Detecció de duplicitats', title: 'Detecció de duplicitats', againLabel: 'Torna a comprovar' },
+      fidelity: { key: 'fidelity_analysis_result', pdfKind: 'fidelity', label: 'Comprovar Fidelitat', doneLabel: 'Veure Informe Fidelitat', title: 'Comprovació de fidelitat (IA)', againLabel: 'Torna a comprovar' }
     };
 
     function kindOf(btn) {
@@ -268,7 +270,7 @@
       return out.join('');
     }
 
-    // El dato guardado en data-result / data-clarity es JSON (objeto o texto); '' si no hay.
+    // El dato guardado en data-result es JSON (objeto o texto); '' si no hay.
     function parseStored(raw) {
       if (!raw) return '';
       try { return JSON.parse(raw); } catch (e) { return raw; }
@@ -592,23 +594,20 @@
     function showReport(btn) {
       var kind = kindOf(btn);
       var nodes = [];
-      if (kind === KINDS.normative && btn.dataset.clarity) nodes.push(renderReport(KINDS.analyze.title + ' · Referent Departamental', parseStored(btn.dataset.clarity), true));
       nodes.push(renderReport(kind.title, parseStored(btn.dataset.result), false, kind.pdfKind));
       if (kind.pdfKind) { // normativa, fidelidad y claridad (Referente): PDF anotado
         var tools = pdfTools(btn, kind, parseStored(btn.dataset.result));
         if (tools) nodes.push(tools);
       }
-      if (kind !== KINDS.normative) { // re-ejecutar (la validación normativa no se repite)
-        var again = document.createElement('button');
-        again.type = 'button';
-        again.className = 'btn btn-sm';
-        again.textContent = (kind === KINDS.duplicity || kind === KINDS.fidelity) ? 'Torna a comprovar' : 'Torna a analitzar';
-        again.addEventListener('click', function () { runReport(btn); });
-        var foot = document.createElement('div');
-        foot.className = 'report-footer';
-        foot.appendChild(again);
-        nodes.push(foot);
-      }
+      var again = document.createElement('button'); // re-ejecutar el análisis (todos los agentes)
+      again.type = 'button';
+      again.className = 'btn btn-sm';
+      again.textContent = kind.againLabel;
+      again.addEventListener('click', function () { runReport(btn); });
+      var foot = document.createElement('div');
+      foot.className = 'report-footer';
+      foot.appendChild(again);
+      nodes.unshift(foot); // arriba a la derecha: en informes largos el botón no queda al final del scroll
       insertRow(btn, nodes);
     }
 
@@ -621,7 +620,15 @@
       p.textContent = message;
       body.appendChild(p);
       box.appendChild(body);
-      insertRow(btn, [box]);
+      var retry = document.createElement('button'); // tras un error siempre se puede reintentar
+      retry.type = 'button';
+      retry.className = 'btn btn-sm';
+      retry.textContent = 'Torna-ho a provar';
+      retry.addEventListener('click', function () { runReport(btn); });
+      var foot = document.createElement('div');
+      foot.className = 'report-footer';
+      foot.appendChild(retry);
+      insertRow(btn, [box, foot]);
     }
 
     function setDone(btn, done) {

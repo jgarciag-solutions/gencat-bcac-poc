@@ -4,7 +4,7 @@ import os
 import re
 import threading
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import wraps
 
 from dotenv import load_dotenv
@@ -14,11 +14,12 @@ from werkzeug.utils import secure_filename
 
 import gestor_conocimiento
 from pdf_annotator import annotate_pdf_with_ai_results, annotate_referente_pdf
-from pipeline import process_document
+from pipeline import load_config, process_document
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+AI_LOG_FOLDER = os.path.join(BASE_DIR, "logs", "ai_responses")  # respuestas de IA no interpretables (fuera de git)
 ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
                       "txt", "odt", "png", "jpg", "jpeg"}
 
@@ -42,7 +43,7 @@ S_ED = "En elaboració - Editor Departamental"
 S_EC = "En elaboració - Editor Canal"
 S_RD = "En validació - Pdt. Referent Departamental"
 S_UF = "En validació - Pdt. Unitat Finalista"
-S_GCB = "En validació - Pdt. Gestor Coneixement Base"
+S_GCB = "En validació - Pdt. Gestor Coneixement Cord"
 S_GCC = "En validació - Pdt. Gestor Coneixement Canal"
 S_PUB = "Publicat"
 STATES = [S_ED, S_EC, S_RD, S_UF, S_GCB, S_GCC, S_PUB]
@@ -65,7 +66,7 @@ TABS = [
     {"role": "Editor Canal", "slug": "editor-canal", "status": S_EC},
     {"role": "Referent Departamental", "slug": "referent-departamental", "status": S_RD},
     {"role": "Validador Finalista", "slug": "validador-finalista", "status": S_UF},
-    {"role": "Gestor Coneixement Base", "slug": "gestor-coneixement-base", "status": S_GCB},
+    {"role": "Gestor Coneixement Cord", "slug": "gestor-coneixement-base", "status": S_GCB},
     {"role": "Gestor Coneixement Canal", "slug": "gestor-coneixement-canal", "status": S_GCC},
     {"role": "Publicats", "slug": "publicats", "status": S_PUB},
 ]
@@ -81,6 +82,7 @@ ACTION_LABEL = {
 
 # Estado inicial / destino de devolución según el tipo de contenido.
 EDITOR_STATE = {"Base": S_ED, "Referenciat": S_ED, "Adaptat": S_EC}
+EDITOR_STATES = {S_ED, S_EC}
 
 TAXONOMY = {
     "Societat i ciutadania": {
@@ -281,25 +283,71 @@ def published_base_docs(docs):
 
 
 def clean_and_parse_json(llm_response: str) -> dict:
-    """Parsea la respuesta JSON de un agente, tolerando vallas Markdown accidentales.
+    """Parsea la respuesta JSON de un agente, tolerando fallos habituales del modelo.
 
-    Devuelve el diccionario, o {"error": True, "mensaje": ...} si no es JSON válido.
+    Con `output_schema` el JSON ya llega bien formado; esto es la red de seguridad: vallas Markdown, texto
+    alrededor del objeto, saltos de línea sin escapar dentro de las cadenas y comas finales.
+    Devuelve el diccionario, o {"error": True, "mensaje": ...} si no se puede interpretar.
     """
     error = {"error": True, "mensaje": "Error en processar la resposta de la IA."}
     cleaned = re.sub(r"```json|```", "", llm_response or "").strip()
-    try:
-        data = json.loads(cleaned)
-    except (ValueError, TypeError):
-        # texto extra alrededor del objeto: se intenta con lo que hay entre la primera { y la última }
-        start, end = cleaned.find("{"), cleaned.rfind("}")
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    candidates = [cleaned]
+    if 0 <= start < end:  # texto extra alrededor del objeto
+        candidates.append(cleaned[start:end + 1])
+    candidates += [re.sub(r",\s*([}\]])", r"\1", c) for c in list(candidates)]  # comas finales
+    for candidate in candidates:
         try:
-            data = json.loads(cleaned[start:end + 1]) if 0 <= start < end else None
-        except ValueError:
-            data = None
-    if not isinstance(data, dict):
-        app.logger.warning("Respuesta de la IA no es un JSON válido: %.300s", llm_response)
-        return error
-    return data
+            data = json.loads(candidate, strict=False)  # strict=False admite saltos de línea dentro de cadenas
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return error
+
+
+def dump_ai_response(raw, kind, doc_id):
+    """Guarda la respuesta completa de la IA en logs/ai_responses/ para diagnosticar; devuelve la ruta (o None)."""
+    try:
+        os.makedirs(AI_LOG_FOLDER, exist_ok=True)
+        path = os.path.join(AI_LOG_FOLDER, f"{kind}_{doc_id}_{datetime.now():%Y%m%d_%H%M%S}.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(raw or "")
+        return path
+    except OSError:
+        app.logger.exception("No se pudo guardar la respuesta de la IA")
+        return None
+
+
+def run_ai_json(run, *args, kind, doc_id):
+    """Ejecuta un agente y devuelve su respuesta como diccionario.
+
+    Si la respuesta no se puede interpretar se reintenta una vez; si vuelve a fallar se guarda la respuesta
+    completa en un archivo (el log solo lleva la ruta) y se devuelve el diccionario de error.
+    Las excepciones del agente (red, cuota, clave…) se propagan: no se reintentan.
+    """
+    raw, result = "", {"error": True}
+    for attempt in (1, 2):
+        raw = run(*args)
+        result = clean_and_parse_json(raw)
+        if not result.get("error"):
+            return result
+        app.logger.warning("Respuesta de IA no válida (%s, documento %s, intento %d/2).", kind, doc_id, attempt)
+    app.logger.warning("Respuesta completa de IA guardada en %s", dump_ai_response(raw, kind, doc_id))
+    return result
+
+
+def ai_agent_enabled(config_key):
+    """True si el agente IA está activo en config.json (se lee en cada llamada; por defecto, activo)."""
+    return bool(load_config().get(config_key, True))
+
+
+def simulated_ai_result(kind):
+    """Informe 'conforme' sin incoherencias, con el mismo formato que devuelve cada agente real."""
+    message = "Document conforme (anàlisi simulada: agent IA desactivat)."
+    if kind == "fidelitat":
+        return {"fiel": True, "mensaje": message, "incoherencias": [], "simulado": True}
+    return {"conforme": True, "missatge": message, "incoherencies": [], "simulado": True}
 
 
 def reset_ai_analysis(doc):
@@ -379,8 +427,11 @@ def dashboard():
     return render_template("dashboard.html", tabs=tabs, validation_states=VALIDATION_STATES)
 
 
-def render_upload(form, selected_sources=(), selected_tipologia=(), selected_departments=(), selected_related=(), origen="", version_doc=None):
+def render_upload(form, selected_sources=(), selected_tipologia=(), selected_departments=(), selected_related=(), origen="", target_doc=None):
     docs = load_documents()
+    # Con documento objetivo: publicado = nueva versión; en la bandeja del editor = edición (sin cambiar de versión).
+    edit_mode = target_doc is not None and target_doc["status"] != S_PUB
+    back_anchor = tab_anchor(target_doc["status"]) if target_doc else ""
     return render_template("upload.html", form=form, taxonomies=taxonomy_paths(),
                            departments=departamentos_competentes(), content_types=CONTENT_TYPES,
                            canales=CANALES, published_docs=[d for d in docs if d["status"] == S_PUB],
@@ -388,15 +439,31 @@ def render_upload(form, selected_sources=(), selected_tipologia=(), selected_dep
                            idiomas=IDIOMAS, tipologias=TIPOLOGIAS, selected_tipologia=list(selected_tipologia),
                            base_docs=published_base_docs(docs),
                            selected_sources=list(selected_sources),
-                           origen=origen, version_doc=version_doc, extensions=sorted(ALLOWED_EXTENSIONS))
+                           origen=origen, target_doc=target_doc, edit_mode=edit_mode, back_anchor=back_anchor,
+                           extensions=sorted(ALLOWED_EXTENSIONS))
 
 
-def save_new_version(doc_id, file, fields, user):
-    """Convierte un documento publicado en su nueva versión con los datos del formulario.
+def can_update(doc, edit):
+    """¿Admite el documento la operación? Edición: devuelto a su editor; nueva versión: publicado."""
+    if doc is None:
+        return False
+    if edit:
+        return doc["status"] in EDITOR_STATES and bool(doc["observations"])
+    return doc["status"] == S_PUB
 
+
+def save_document_update(doc_id, file, fields, user, edit):
+    """Guarda los datos del formulario sobre un documento existente.
+
+    `edit=False`: nueva versión de un documento publicado (version += 1, vuelve a la bandeja de su editor).
+    `edit=True`: edición de un documento devuelto en la bandeja de su editor (misma versión y mismo estado;
+    el motivo de la devolución se mantiene hasta que se apruebe).
     Si llega un archivo nuevo, sustituye al anterior (original, PDF anotados y vectores).
     Devuelve la redirección al dashboard, o None si falla (el aviso ya se ha hecho con flash).
     """
+    not_allowed = ("Només es poden editar documents retornats a l'editor." if edit
+                   else "Només es pot versionar un document publicat.")
+    no_longer = "El document ja no es pot editar." if edit else "El document ja no es pot versionar."
     new_name = None
     if file and file.filename:
         new_name = secure_filename(file.filename)
@@ -409,8 +476,8 @@ def save_new_version(doc_id, file, fields, user):
     with DOCS_LOCK:  # reserva el nombre: tras guardar el archivo, otro upload igual se detecta
         docs = load_documents()
         doc = find_doc(docs, doc_id)
-        if doc is None or doc["status"] != S_PUB:
-            flash("Només es pot versionar un document publicat.", "error")
+        if not can_update(doc, edit):
+            flash(not_allowed, "error")
             return None
         if new_name:
             if filename_exists(new_name, docs, exclude_id=doc_id):
@@ -428,10 +495,10 @@ def save_new_version(doc_id, file, fields, user):
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante el procesado
         docs = load_documents()
         doc = find_doc(docs, doc_id)
-        if doc is None or doc["status"] != S_PUB:
+        if not can_update(doc, edit):
             if new_name and (doc is None or doc.get("filename") != new_name) and os.path.exists(path):
                 os.remove(path)
-            flash("El document ja no es pot versionar.", "error")
+            flash(no_longer, "error")
             return None
         if new_name:
             old_name = doc.get("filename")
@@ -444,19 +511,20 @@ def save_new_version(doc_id, file, fields, user):
                 old_paths.append(vector_path(doc["vector_file"]))
             doc["filename"], doc["simhash"], doc["vector_file"] = new_name, simhash, vector_file
         doc.update(fields)
-        doc["version"] = int(doc.get("version", 1)) + 1
-        doc["status"] = EDITOR_STATE[doc["content_type"]]
-        doc["observations"] = ""
-        doc["fecha_publicacion"] = doc["fecha_revision_prevista"] = None  # se rellenan al volver a publicar
-        reset_ai_analysis(doc)
+        if not edit:
+            doc["version"] = int(doc.get("version", 1)) + 1
+            doc["status"] = EDITOR_STATE[doc["content_type"]]
+            doc["observations"] = ""
+            doc["fecha_publicacion"] = doc["fecha_revision_prevista"] = None  # se rellenan al volver a publicar
+            reset_ai_analysis(doc)
         doc["updated_by"] = user["username"]
         try:
             save_documents(docs)  # primero el registro: si falla, no se borra ningún archivo anterior
         except OSError:
-            app.logger.exception("No se pudo guardar documents.json al versionar %s", doc_id)
-            flash("No s'ha pogut desar la nova versió. Torna-ho a provar.", "error")
+            app.logger.exception("No se pudo guardar documents.json al actualizar %s", doc_id)
+            flash("No s'han pogut desar els canvis. Torna-ho a provar.", "error")
             return None
-        status, version = doc["status"], doc["version"]
+        status, version, title = doc["status"], doc["version"], doc["title"]
 
     for old in old_paths:
         try:
@@ -465,11 +533,15 @@ def save_new_version(doc_id, file, fields, user):
             pass
         except OSError:
             app.logger.exception("No se pudo eliminar %s", old)
-    if new_name and not vector_file:
-        flash(f"Nova versió {version} creada, però no s'han generat els vectors "
+    if edit:
+        done = f"Document «{title}» actualitzat."
+    else:
+        done = f"Nova versió {version} creada: el document torna a «{status}»."
+    if new_name and not vector_file and load_config().get("embeddings_activos", True):
+        flash(done.rstrip(".") + ", però no s'han generat els vectors "
               "(revisa l'API key o la quota de Gemini).", "warning")
     else:
-        flash(f"Nova versió {version} creada: el document torna a «{status}».", "success")
+        flash(done, "success")
     return redirect(url_for("dashboard") + tab_anchor(status))
 
 
@@ -484,29 +556,37 @@ def upload():
     origen = (request.form.get("origen") if request.method == "POST" else request.args.get("origen", "")) or ""
     origen = origen.strip()
 
-    # Nueva versión: /upload?versionar=<id> precarga un documento publicado; el POST lo recibe en `versionar_id`.
-    versionar_id = (request.form.get("versionar_id") if request.method == "POST" else request.args.get("versionar")) or ""
-    version_doc = None
-    if versionar_id:
-        version_doc = find_doc(load_documents(), versionar_id)
-        if version_doc is None or version_doc["status"] != S_PUB:
+    # Documento objetivo: /upload?versionar=<id> (nueva versión de un publicado) o /upload?editar=<id> (edición de un
+    # devuelto). El POST los recibe en `versionar_id` / `editar_id`.
+    post = request.method == "POST"
+    versionar_id = (request.form.get("versionar_id") if post else request.args.get("versionar")) or ""
+    editar_id = "" if versionar_id else (request.form.get("editar_id") if post else request.args.get("editar")) or ""
+    edit = bool(editar_id)
+    target_id = versionar_id or editar_id
+    target_doc = None
+    if target_id:
+        target_doc = find_doc(load_documents(), target_id)
+        if not can_update(target_doc, edit):
+            if edit:
+                flash("Només es poden editar documents retornats a l'editor.", "error")
+                return redirect(url_for("dashboard") + (tab_anchor(target_doc["status"]) if target_doc else ""))
             flash("Només es pot versionar un document publicat.", "error")
             return redirect(url_for("dashboard") + tab_anchor(S_PUB))
         if request.method == "GET":
-            form = {"title": version_doc["title"], "content_type": version_doc["content_type"],
-                    "idioma": version_doc.get("idioma") or "",
-                    "canal": version_doc.get("canal") or "",
-                    "taxonomy": version_doc["taxonomy"][0] if version_doc["taxonomy"] else ""}
-            selected_tipologia = list(version_doc["tipologia"])
-            selected_departments = list(version_doc["departamentos_competentes"])
-            selected_sources = list(version_doc["unidades_base_origen"])
-            selected_related = list(version_doc["contenidos_relacionados"])
+            form = {"title": target_doc["title"], "content_type": target_doc["content_type"],
+                    "idioma": target_doc.get("idioma") or "",
+                    "canal": target_doc.get("canal") or "",
+                    "taxonomy": target_doc["taxonomy"][0] if target_doc["taxonomy"] else ""}
+            selected_tipologia = list(target_doc["tipologia"])
+            selected_departments = list(target_doc["departamentos_competentes"])
+            selected_sources = list(target_doc["unidades_base_origen"])
+            selected_related = list(target_doc["contenidos_relacionados"])
 
     if request.method == "POST":
         form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "idioma", "canal")}
         # Familia «Identificación»: todos sus campos son obligatorios.
         form["title"] = request.form.get("titulo", "").strip()
-        form["content_type"] = (version_doc["content_type"] if version_doc  # el tipo no cambia al versionar
+        form["content_type"] = (target_doc["content_type"] if target_doc  # el tipo no cambia al versionar ni al editar
                                 else request.form.get("tipo_contenido", "").strip())
         selected_tipologia = list(dict.fromkeys(request.form.getlist("tipologia")))
         # Familia «Origen y trazabilidad» (listas sin duplicados)
@@ -528,7 +608,7 @@ def upload():
         elif any(t not in TIPOLOGIAS for t in selected_tipologia):
             errors.append("Alguna opció de Tipologia no és vàlida.")
         if not file or not file.filename:
-            if not version_doc:  # al versionar el archivo es opcional: si no se sube, se mantiene el anterior
+            if not target_doc:  # al versionar o editar el archivo es opcional: si no se sube, se mantiene el anterior
                 errors.append("Has de seleccionar un fitxer.")
         elif not allowed_file(file.filename):
             errors.append("Tipus de fitxer no permès. Formats vàlids: "
@@ -575,13 +655,13 @@ def upload():
         if errors:
             for e in errors:
                 flash(e, "error")
-            return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, version_doc), 400
-        elif version_doc:
+            return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, target_doc), 400
+        elif target_doc:
             fields = {"title": form["title"], "idioma": form["idioma"], "tipologia": selected_tipologia,
                       "taxonomy": taxonomy, "departamentos_competentes": departments,
                       "unidades_base_origen": source, "canal": canal,
                       "contenidos_relacionados": selected_related}
-            response = save_new_version(versionar_id, file, fields, user)
+            response = save_document_update(target_id, file, fields, user, edit)
             if response is not None:
                 return response
         else:
@@ -640,15 +720,15 @@ def upload():
                         if vector_file:
                             os.remove(os.path.join(BASE_DIR, vector_file))
                         flash("No s'ha pogut desar el document. Torna-ho a provar.", "error")
-                        return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, version_doc)
-                    if vector_file:
+                        return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, target_doc)
+                    if vector_file or not load_config().get("embeddings_activos", True):
                         flash("Document pujat. El document queda en elaboració.", "success")
                     else:
                         flash("Document pujat en elaboració, però no s'han generat els vectors "
                               "(revisa l'API key o la quota de Gemini).", "warning")
                     return redirect(url_for("dashboard"))
 
-    return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, version_doc)
+    return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, target_doc)
 
 
 def change_document(doc_id, action):
@@ -767,15 +847,20 @@ def api_analyze(doc_id):
     if not filename.lower().endswith(".pdf"):
         return jsonify(ok=False, error="Només es poden analitzar documents PDF."), 400
     path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    if not os.path.isfile(path):
-        return jsonify(ok=False, error="Fitxer físic no disponible"), 404
-    api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
-    if not api_key or "tu_api_key" in api_key:
-        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
+    simulated = not ai_agent_enabled("agente_claridad_activo")
+    if not simulated:
+        if not os.path.isfile(path):
+            return jsonify(ok=False, error="Fitxer físic no disponible"), 404
+        api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+        if not api_key or "tu_api_key" in api_key:
+            return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
 
     try:
-        from agents.reviewer_agent import run_review  # import diferido: la app arranca sin la IA
-        result = clean_and_parse_json(run_review(path))
+        if simulated:
+            result = simulated_ai_result("claredat")
+        else:
+            from agents.reviewer_agent import run_review  # import diferido: la app arranca sin la IA
+            result = run_ai_json(run_review, path, kind="claredat", doc_id=doc_id)
     except Exception as exc:
         app.logger.exception("Fallo en el análisis IA de %s", doc_id)
         return jsonify(ok=False, error=f"No s'ha pogut completar l'anàlisi: {exc}"), 502
@@ -807,19 +892,24 @@ def api_validate_normative(doc_id):
     if not filename.lower().endswith(".pdf"):
         return jsonify(ok=False, error="Només es poden validar documents PDF."), 400
     path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    if not os.path.isfile(path):
-        return jsonify(ok=False, error="Fitxer físic no disponible"), 404
-    api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
-    if not api_key or "tu_api_key" in api_key:
-        return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
+    simulated = not ai_agent_enabled("agente_normativa_activo")
+    if not simulated:
+        if not os.path.isfile(path):
+            return jsonify(ok=False, error="Fitxer físic no disponible"), 404
+        api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+        if not api_key or "tu_api_key" in api_key:
+            return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
 
     try:
-        from agents.tools import list_normative_pdfs
-        if not list_normative_pdfs():
-            return jsonify(ok=False, error="No hi ha lleis carregades a la carpeta normativa/. "
-                                           "Afegeix fitxers PDF de normativa i torna-ho a provar."), 409
-        from agents.normative_agent import run_normative_review  # import diferido
-        result = clean_and_parse_json(run_normative_review(path))
+        if simulated:
+            result = simulated_ai_result("normativa")
+        else:
+            from agents.tools import list_normative_pdfs
+            if not list_normative_pdfs():
+                return jsonify(ok=False, error="No hi ha lleis carregades a la carpeta normativa/. "
+                                               "Afegeix fitxers PDF de normativa i torna-ho a provar."), 409
+            from agents.normative_agent import run_normative_review  # import diferido
+            result = run_ai_json(run_normative_review, path, kind="normativa", doc_id=doc_id)
     except Exception as exc:
         app.logger.exception("Fallo en la validación normativa de %s", doc_id)
         return jsonify(ok=False, error=f"No s'ha pogut completar la validació: {exc}"), 502
@@ -847,7 +937,7 @@ def api_detect_duplicity(doc_id):
     if doc is None:
         return jsonify(ok=False, error="Document no trobat."), 404
     if doc["status"] != S_GCB:
-        return jsonify(ok=False, error="El document no està pendent del Gestor Coneixement Base."), 409
+        return jsonify(ok=False, error="El document no està pendent del Gestor Coneixement Cord."), 409
     try:
         result = gestor_conocimiento.detect_document_duplicity(
             doc_id, docs, vectors_dir=os.path.join(BASE_DIR, "vectores"),
@@ -883,6 +973,9 @@ def api_check_fidelity(doc_id):
     adapted_path = os.path.join(folder, filename)
     if not filename.lower().endswith(".pdf"):
         return jsonify(ok=False, error="Només es poden comprovar documents PDF."), 400
+    simulated = not ai_agent_enabled("agente_fidelidad_activo")
+    if simulated:
+        return save_fidelity_result(doc_id, simulated_ai_result("fidelitat"))
     if not os.path.isfile(adapted_path):
         return jsonify(ok=False, error="Fitxer físic no disponible"), 404
 
@@ -907,7 +1000,7 @@ def api_check_fidelity(doc_id):
 
     try:
         from agents.comprobar_fidelidad import run_fidelity_check  # import diferido
-        result = clean_and_parse_json(run_fidelity_check(adapted_path, source_paths))
+        result = run_ai_json(run_fidelity_check, adapted_path, source_paths, kind="fidelitat", doc_id=doc_id)
     except Exception as exc:
         app.logger.exception("Fallo en la comprobación de fidelidad de %s", doc_id)
         return jsonify(ok=False, error=f"No s'ha pogut completar la comprovació: {exc}"), 502
@@ -915,7 +1008,10 @@ def api_check_fidelity(doc_id):
         return jsonify(ok=False, error=result["mensaje"]), 502
     if missing:
         result["nota"] = f"{missing} document(s) font no s'han pogut incloure perquè no tenen un PDF disponible."
+    return save_fidelity_result(doc_id, result)
 
+
+def save_fidelity_result(doc_id, result):
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante la llamada al modelo
         docs = load_documents()
         doc = find_doc(docs, doc_id)

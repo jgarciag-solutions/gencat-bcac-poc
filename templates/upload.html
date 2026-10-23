@@ -1,12 +1,15 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Crea una nova versió' if version_doc else 'Puja un document' }}{% endblock %}
+{% block title %}{{ 'Edita el document' if edit_mode else ('Crea una nova versió' if target_doc else 'Puja un document') }}{% endblock %}
 {% block content %}
 <main>
   <header class="page-header">
     <div>
-      <h1>{{ 'Crea una nova versió' if version_doc else 'Puja un document' }}</h1>
-      {% if version_doc %}
-      <p>Es crearà la versió {{ version_doc.version + 1 }} i el document tornarà a la safata del seu editor.</p>
+      <h1>{{ 'Edita el document' if edit_mode else ('Crea una nova versió' if target_doc else 'Puja un document') }}</h1>
+      {% if edit_mode %}
+      <p>Els canvis es desen sobre el mateix document: no canvia de versió ni d'estat. Quan acabis, aprova'l des de la safata del teu editor.</p>
+      {% if target_doc.observations %}<div class="obs-alert" role="alert"><strong>Retornat:</strong> {{ target_doc.observations }}</div>{% endif %}
+      {% elif target_doc %}
+      <p>Es crearà la versió {{ target_doc.version + 1 }} i el document tornarà a la safata del seu editor.</p>
       {% else %}
       <p>El document entrarà al flux en estat d'elaboració (Editor Departamental o Editor Canal segons el tipus).</p>
       {% endif %}
@@ -16,13 +19,13 @@
   <section class="card">
     <form class="card-body" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
       <input type="hidden" name="origen" value="{{ origen }}">
-      {% if version_doc %}<input type="hidden" name="versionar_id" value="{{ version_doc.id }}">{% endif %}
+      {% if target_doc %}<input type="hidden" name="{{ 'editar_id' if edit_mode else 'versionar_id' }}" value="{{ target_doc.id }}">{% endif %}
       <div class="form-grid">
         <div class="field full">
           <label for="file">Fitxer</label>
-          <input id="file" name="file" type="file" {{ '' if version_doc else 'required' }} accept="{% for e in extensions %}.{{ e }}{% if not loop.last %},{% endif %}{% endfor %}">
+          <input id="file" name="file" type="file" {{ '' if target_doc else 'required' }} accept="{% for e in extensions %}.{{ e }}{% if not loop.last %},{% endif %}{% endfor %}">
           <span class="hint">Formats: {{ extensions | join(', ') }}. Màxim 16 MB.</span>
-          {% if version_doc %}<p class="help-text hint">Fitxer actual: <strong>{{ version_doc.filename }}</strong>. Selecciona un fitxer nou només si el vols reemplaçar.</p>{% endif %}
+          {% if target_doc %}<p class="help-text hint">Fitxer actual: <strong>{{ target_doc.filename }}</strong>. Selecciona un fitxer nou només si el vols reemplaçar.</p>{% endif %}
         </div>
         <fieldset class="family-fieldset">
           <legend class="family-legend">Identificació</legend>
@@ -33,9 +36,9 @@
             </div>
             <div class="field">
               <label for="tipo_contenido">Tipus de contingut</label>
-              <select name="tipo_contenido" id="tipo_contenido" required {{ 'disabled' if version_doc }}>
-                {% if version_doc %}
-                  {% set allowed_types = [version_doc.content_type] %}
+              <select name="tipo_contenido" id="tipo_contenido" required {{ 'disabled' if target_doc }}>
+                {% if target_doc %}
+                  {% set allowed_types = [target_doc.content_type] %}
                 {% elif origen == 'editor-canal' %}
                   {% set allowed_types = ['Adaptat'] %}
                 {% elif origen == 'editor-departamental' %}
@@ -50,7 +53,7 @@
                 <option value="{{ ct }}" {{ 'selected' if form.get('content_type') == ct or allowed_types | length == 1 }}>{{ ct }}</option>
                 {% endfor %}
               </select>
-              {% if version_doc %}<input type="hidden" name="tipo_contenido" value="{{ version_doc.content_type }}">{% endif %}
+              {% if target_doc %}<input type="hidden" name="tipo_contenido" value="{{ target_doc.content_type }}">{% endif %}
             </div>
             <div class="field">
               <label for="idioma">Idioma</label>
@@ -146,9 +149,9 @@
         </div>
       </div>
       <div class="form-actions">
-        {% if version_doc %}
-        <a href="{{ url_for('dashboard') }}#publicats" class="btn btn-outline-secondary" style="margin-left: 10px;">Cancel·la</a>
-        <button type="submit" class="btn btn-primary">Desa la nova versió</button>
+        {% if target_doc %}
+        <a href="{{ url_for('dashboard') }}{{ back_anchor }}" class="btn btn-outline-secondary" style="margin-left: 10px;">Cancel·la</a>
+        <button type="submit" class="btn btn-primary">{{ 'Desa els canvis' if edit_mode else 'Desa la nova versió' }}</button>
         {% else %}
         <a class="btn" href="{{ url_for('dashboard') }}">Cancel·la</a>
         <button type="submit" class="btn btn-primary">Puja i inicia el flux</button>

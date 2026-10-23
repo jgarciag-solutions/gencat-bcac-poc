@@ -1,18 +1,20 @@
 """Preprocesamiento de documentos: normalización, SimHash, chunking y embeddings."""
+import collections
+import hashlib
 import json
 import logging
 import os
 import re
 
 import pdfplumber
-from simhash import Simhash
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "config.json")
 VECTORS_FOLDER = os.path.join(BASE_DIR, "vectores")
 EMBED_BATCH_SIZE = 100  # máximo de textos por petición a la API
 
-DEFAULT_CONFIG = {"chunk_size": 1000, "chunk_overlap": 100, "embedding_model": "gemini-embedding-001"}
+DEFAULT_CONFIG = {"chunk_size": 1000, "chunk_overlap": 100, "embedding_model": "gemini-embedding-001",
+                  "embeddings_activos": True}
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +42,22 @@ def normalize_text(text: str) -> str:
 
 def compute_simhash(text: str) -> str:
     """Huella SimHash (64 bits) del texto normalizado, como cadena hexadecimal de 16 dígitos."""
-    return format(Simhash(normalize_text(text)).value, "016x")
+    # Mismo algoritmo que simhash 2.1.2 (MD5, ventanas de 4 caracteres), pero con enteros de
+    # Python: la librería falla con numpy 2.x cuando una ventana se repite más de 255 veces.
+    content = "".join(re.findall(r"[\w\u4e00-\u9fcc]+", normalize_text(text)))
+    windows = [content[i:i + 4] for i in range(max(len(content) - 3, 1))]
+    counts = collections.Counter(windows)
+    sums = [0] * 64
+    for window, weight in counts.items():
+        bits = int.from_bytes(hashlib.md5(window.encode("utf-8")).digest()[-8:], "big")
+        for i in range(64):
+            if bits >> (63 - i) & 1:
+                sums[i] += weight
+    half = len(windows) / 2
+    value = 0
+    for total in sums:
+        value = (value << 1) | (total > half)
+    return format(value, "016x")
 
 
 def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
@@ -96,6 +113,9 @@ def process_document(path: str, doc_id: str) -> tuple:
 
     try:
         config = load_config()
+        if not config.get("embeddings_activos", True):
+            log.info("Embeddings desactivados en config.json; no se generan vectores para %s.", path)
+            return simhash, None
         chunks = chunk_text(text, int(config["chunk_size"]), int(config["chunk_overlap"]))
         vectors = generate_embeddings(chunks, config["embedding_model"])
         os.makedirs(VECTORS_FOLDER, exist_ok=True)
