@@ -1,17 +1,15 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Edita el document' if edit_mode else ('Crea una nova versió' if target_doc else 'Puja un document') }}{% endblock %}
+{% block title %}{{ 'Edita el contingut' if edit_mode else 'Puja un contingut' }}{% endblock %}
 {% block content %}
 <main>
   <header class="page-header">
     <div>
-      <h1>{{ 'Edita el document' if edit_mode else ('Crea una nova versió' if target_doc else 'Puja un document') }}</h1>
+      <h1>{{ 'Edita el contingut' if edit_mode else 'Puja un contingut' }}</h1>
       {% if edit_mode %}
-      <p>Els canvis es desen sobre el mateix document: no canvia de versió ni d'estat. Quan acabis, aprova'l des de la safata del teu editor.</p>
+      <p>Els canvis es desen sobre el mateix contingut: no canvia de versió ni d'estat. Quan acabis, aprova'l des de la safata del teu editor.</p>
       {% if target_doc.observations %}<div class="obs-alert" role="alert"><strong>Retornat{% if target_doc.rechazado_por_rol %} per {{ target_doc.rechazado_por_rol }}{% endif %}:</strong> {{ target_doc.observations }}</div>{% endif %}
-      {% elif target_doc %}
-      <p>Es crearà la versió {{ target_doc.version + 1 }} i el document tornarà a la safata del seu editor.</p>
       {% else %}
-      <p>El document entrarà al flux en estat d'elaboració (Editor Departamental o Editor Canal segons el tipus).</p>
+      <p>El contingut entrarà al flux en estat d'elaboració (Editor Departamental o Editor Canal segons el tipus).</p>
       {% endif %}
     </div>
   </header>
@@ -19,7 +17,7 @@
   <section class="card">
     <form class="card-body" method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
       <input type="hidden" name="origen" value="{{ origen }}">
-      {% if target_doc %}<input type="hidden" name="{{ 'editar_id' if edit_mode else 'versionar_id' }}" value="{{ target_doc.id }}">{% endif %}
+      {% if target_doc %}<input type="hidden" name="editar_id" value="{{ target_doc.id }}">{% endif %}
       <div class="form-grid">
         <div class="field full">
           <label for="file">Fitxer</label>
@@ -67,7 +65,7 @@
               </select>
             </div>
             <div class="field full">
-              <span class="label-text">Tipologia <small>(selecciona'n almenys una)</small></span>
+              <span class="label-text">Tipologia <small>(selecciona una)</small></span>
               <div class="tipologia-container" id="tipologia-container">
                 {% for name in tipologias %}
                 <label class="tipologia-item">
@@ -97,16 +95,17 @@
               <span class="field-error" id="departamento-error" role="alert" hidden>Has de seleccionar almenys un departament competent.</span>
             </div>
             <div class="field full" id="container_unidad_base" hidden>
-              <label for="unidades_base_origen">Unitat base d'origen <small>(només Adaptat; documents base publicats)</small></label>
+              <label for="unidades_base_origen">Unitat base d'origen <small>(només Adaptat; continguts base publicats)</small></label>
               <select id="unidades_base_origen" name="unidades_base_origen" multiple size="{{ [base_docs | length, 3] | max if base_docs else 3 }}" disabled>
                 {% for d in base_docs %}
                 <option value="{{ d.id }}" data-taxonomy='{{ d.taxonomy | tojson }}'
                         data-departments='{{ (d.departamentos_competentes or []) | tojson }}'
+                        data-responsables='{{ (d.responsables or []) | tojson }}'
                         {{ 'selected' if d.id in selected_sources }}>{{ d.denominacio }} (v{{ d.version }})</option>
                 {% endfor %}
               </select>
               <span class="hint">Mantén premut ⌘ (Mac) o Ctrl per seleccionar-ne diverses.</span>
-              <span class="field-error" id="source-empty" role="alert" hidden>No hi ha documents base publicats disponibles per adaptar</span>
+              <span class="field-error" id="source-empty" role="alert" hidden>No hi ha continguts base publicats disponibles per adaptar</span>
               <span class="field-error" id="unidad-error" role="alert" hidden>Has de seleccionar almenys una unitat base d'origen.</span>
             </div>
             <div class="field full" id="field-inherited-dep" hidden>
@@ -125,7 +124,7 @@
               <span class="field-error" id="canal-error" role="alert" hidden>Has de seleccionar un canal.</span>
             </div>
             <div class="field full" id="container_relacionados">
-              <span class="label-text">Continguts relacionats <small>(opcional; documents publicats)</small></span>
+              <span class="label-text">Continguts relacionats <small>(opcional; continguts publicats)</small></span>
               {% if published_docs %}
               <div class="tipologia-container">
                 {% for d in published_docs %}
@@ -136,30 +135,55 @@
                 {% endfor %}
               </div>
               {% else %}
-              <em class="hint">No hi ha documents publicats disponibles</em>
+              <em class="hint">No hi ha continguts publicats disponibles</em>
               {% endif %}
             </div>
           </div>
         </fieldset>
-        <div class="field full" id="field-taxonomy" hidden>
-          <label for="taxonomy">Taxonomia (N1 &gt; N2 &gt; N3)</label>
-          <select id="taxonomy" name="taxonomy" required disabled>
-            <option value="" disabled {{ 'selected' if not form.get('taxonomy') }}>Selecciona…</option>
-            {% for t in taxonomies %}
-            <option value="{{ t }}" {{ 'selected' if form.get('taxonomy') == t }}>{{ t }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="field full" id="field-inherited" hidden>
-          <label for="inherited-taxonomy">Taxonomia heretada</label>
-          <textarea id="inherited-taxonomy" class="readonly" rows="2" readonly placeholder="S'emplenarà en seleccionar les fonts originals"></textarea>
-          <span class="hint">Unió (sense duplicats) de les taxonomies de les fonts seleccionades. No és editable.</span>
-        </div>
+        <fieldset class="family-fieldset" id="family-classificacio" hidden>
+          <legend class="family-legend">Classificació</legend>
+          <div class="form-grid">
+            <div class="field full" id="field-taxonomy" hidden>
+              <label for="taxonomy">Taxonomia (N1 &gt; N2 &gt; N3)</label>
+              <select id="taxonomy" name="taxonomy" required disabled>
+                <option value="" disabled {{ 'selected' if not form.get('taxonomy') }}>Selecciona…</option>
+                {% for t in taxonomies %}
+                <option value="{{ t }}" {{ 'selected' if form.get('taxonomy') == t }}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="field full" id="field-inherited" hidden>
+              <label for="inherited-taxonomy">Taxonomia heretada</label>
+              <textarea id="inherited-taxonomy" class="readonly" rows="2" readonly placeholder="S'emplenarà en seleccionar les fonts originals"></textarea>
+              <span class="hint">Unió (sense duplicats) de les taxonomies de les fonts seleccionades. No és editable.</span>
+            </div>
+          </div>
+        </fieldset>
+        <fieldset class="family-fieldset" id="family-cicle" hidden>
+          <legend class="family-legend">Cicle de vida</legend>
+          <div class="form-grid">
+            <div class="field" id="field-responsable" hidden>
+              <label for="responsable">Responsable <small>(Base i Referenciat)</small></label>
+              <select name="responsable" id="responsable" disabled>
+                <option value="" disabled {{ 'selected' if not form.get('responsable') }}>Selecciona…</option>
+                {% for r in responsables %}
+                <option value="{{ r }}" {{ 'selected' if form.get('responsable') == r }}>{{ r }}</option>
+                {% endfor %}
+              </select>
+              <span class="field-error" id="responsable-error" role="alert" hidden>Has de seleccionar un responsable.</span>
+            </div>
+            <div class="field full" id="field-inherited-resp" hidden>
+              <label for="inherited-responsables">Responsable heretat</label>
+              <textarea id="inherited-responsables" class="readonly" rows="2" readonly placeholder="S'emplenarà en seleccionar les fonts originals"></textarea>
+              <span class="hint">Unió (sense duplicats) dels responsables de les fonts seleccionades. No és editable.</span>
+            </div>
+          </div>
+        </fieldset>
       </div>
       <div class="form-actions">
         {% if target_doc %}
         <a href="{{ url_for('dashboard') }}{{ back_anchor }}" class="btn btn-outline-secondary" style="margin-left: 10px;">Cancel·la</a>
-        <button type="submit" class="btn btn-primary">{{ 'Desa els canvis' if edit_mode else 'Desa la nova versió' }}</button>
+        <button type="submit" class="btn btn-primary">Desa els canvis</button>
         {% else %}
         <a class="btn" href="{{ url_for('dashboard') }}">Cancel·la</a>
         <button type="submit" class="btn btn-primary">Puja i inicia el flux</button>
@@ -186,6 +210,12 @@
     var inherited = document.getElementById('inherited-taxonomy');
     var inhDepGroup = document.getElementById('field-inherited-dep');
     var inheritedDeps = document.getElementById('inherited-departments');
+    var classGroup = document.getElementById('family-classificacio');
+    var cicleGroup = document.getElementById('family-cicle');
+    var respGroup = document.getElementById('field-responsable');
+    var resp = document.getElementById('responsable');
+    var inhRespGroup = document.getElementById('field-inherited-resp');
+    var inheritedResp = document.getElementById('inherited-responsables');
     var submit = form.querySelector('button[type="submit"]');
 
     function show(group, visible) { group.hidden = !visible; }
@@ -206,6 +236,7 @@
     function updateInherited() {
       inherited.value = unionOf('taxonomy').join('\n');
       inheritedDeps.value = unionOf('departments').join('\n');
+      inheritedResp.value = unionOf('responsables').join('\n');
     }
 
     // Visibilidad según el tipo de contenido: un campo oculto se deshabilita (ni se envía ni se valida).
@@ -213,8 +244,14 @@
       var base = type.value === 'Base' || type.value === 'Referenciat';  // Referenciat es tracta com Base
       var adapted = type.value === 'Adaptat';
 
+      show(classGroup, base || adapted);  // las familias solo se muestran si tienen campos visibles
+      show(cicleGroup, base || adapted);
       show(taxGroup, base);
       tax.disabled = !base;
+      show(respGroup, base);              // Base: un único responsable obligatorio
+      resp.disabled = !base;
+      resp.required = base;
+      show(inhRespGroup, adapted);
 
       show(depGroup, base);               // Base: al menos una casilla (se valida en el submit)
       depChecks.forEach(function (c) { c.disabled = !base; });
@@ -237,6 +274,7 @@
       setError('departamento-error', false, depGroup);
       setError('unidad-error', false);
       setError('canal-error', false);
+      setError('responsable-error', false);
     }
 
     // Validación del envío (el resto de obligatorios los valida el navegador con required).
@@ -251,6 +289,9 @@
         setError('departamento-error', true, document.getElementById('departamento-checks'));
         problems.push('departamento');
       }
+      if ((type.value === 'Base' || type.value === 'Referenciat') && !resp.value) {
+        setError('responsable-error', true); problems.push('responsable');
+      }
       if (type.value === 'Adaptat') {
         if (src.selectedOptions.length === 0) { setError('unidad-error', true); problems.push('unidad'); }
         if (!canal.value) { setError('canal-error', true); problems.push('canal'); }
@@ -264,6 +305,7 @@
       c.addEventListener('change', function () { setError('departamento-error', false, document.getElementById('departamento-checks')); });
     });
     src.addEventListener('change', function () { updateInherited(); setError('unidad-error', false); });
+    resp.addEventListener('change', function () { setError('responsable-error', false); });
     canal.addEventListener('change', function () { setError('canal-error', false); });
 
     type.addEventListener('change', update);

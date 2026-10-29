@@ -22,7 +22,7 @@ de Catalunya, desarrollada por Ayesa Digital). Permite:
    fidelidad de las adaptaciones respecto a sus documentos base.
 4. Detectar **duplicidades** entre documentos publicados (SimHash + similitud de embeddings).
 5. Ver los hallazgos de la IA como **tarjetas** y sobre un **PDF anotado** (resaltados + recuadros al margen).
-6. **Publicar**, **versionar** o **retirar** (borrado físico) documentos.
+6. **Publicar**, **versionar** o **retirar** (pasa a la pestaña Retirats) documentos.
 
 Características de diseño de la POC:
 
@@ -248,7 +248,7 @@ Todas las filas tienen además «Veure Document Original» (si el archivo es pdf
   al enviarlo se hace `version += 1`, el documento vuelve a `EDITOR_STATE[content_type]`, `observations = ""`, `fecha_publicacion` y `fecha_revision_prevista` a `null` (se rellenan al volver a publicar) y `reset_ai_analysis`. No existe ya la ruta `/versionar`.
 - **Editar** (`GET/POST /upload?editar=<id>`, ver 7.2.1): solo en `S_ED`/`S_EC` y **solo si el documento fue devuelto** (`observations` no vacío). Abre el mismo formulario que «nueva versión» con los datos precargados;
   al guardar **no** cambia `version`, ni `status`, ni `observations` (el motivo de devolución se mantiene hasta «Aprovar», que lo vacía), ni toca los informes de IA (ya se reiniciaron al devolver).
-- **Retirar** (`/api/documents/retirar`): solo desde `S_PUB`; **borra** el registro, los archivos y las referencias (ver 7.6). No existe estado «Retirada»/«Archivo».
+- **Retirar** (`/api/documents/retirar`): solo desde `S_PUB`; mueve el registro a `retirados.json` (ver 7.6) con estado `Retirat` / `Retirat per nova versió`.
 - Tras cualquier acción de estado la app redirige a `/dashboard#<slug>` de la pestaña de origen (`tab_anchor`).
 
 ---
@@ -291,7 +291,7 @@ Orden de secciones del archivo:
 | `GET/POST /upload` | sí | Formulario de alta y su procesamiento (ver 7.2). Acepta `?origen=` (GET) o campo oculto `origen` (POST); `?versionar=<id>` / campo oculto `versionar_id` activan el modo «nueva versión»; `?editar=<id>` / `editar_id` el modo «edición» de un documento devuelto |
 | `POST /avanzar_estado/<id>` | sí | Avanza al siguiente estado del flujo |
 | `POST /rechazar/<id>` | sí | Form `motivo`; devuelve al editor del tipo y reinicia la IA |
-| `POST /api/documents/retirar/<id>` | API | Borrado físico + lógico + integridad referencial (ver 7.6) |
+| `POST /api/documents/retirar/<id>` | API | Mueve a `retirados.json` + integridad referencial (ver 7.6) |
 | `POST /api/analyze/<id>` | API | Exige estado `S_RD` (409 si no). Claridad (agente Referente). Guarda `referente_analysis_result` y `analysis_done`. Respuesta `{ok, referente_analysis_result}` |
 | `POST /api/validate_normative/<id>` | API | Exige estado `S_UF` y PDFs en `normativa/` (409 si no hay). Guarda `normative_analysis_result`. Respuesta `{ok, normative_analysis_result}` |
 | `POST /api/detect_duplicity/<id>` | API | Exige `S_GCB`. Sin IA; llama a `gestor_conocimiento`. Guarda `duplicity_result` (Markdown). Respuesta `{ok, duplicity_result}` |
@@ -340,11 +340,14 @@ Los análisis se ejecutan sin bloqueo y se releen antes de guardar; así otras p
 Sesión por cookie firmada con `SECRET_KEY`; credenciales en claro en el código; sin CSRF. Rutas de archivos restringidas a listas
 conocidas. Las herramientas del LLM restringen las rutas que pueden leer (sección 10).
 
-### 7.6 Retirar (`api_retirar`)
-Solo `S_PUB`. Orden: (1) quitar el registro y limpiar su ID de `unidades_base_origen` y `contenidos_relacionados` en los demás
-documentos; (2) **guardar el JSON primero** (si falla, no se borra nada); (3) borrar el original, los archivos de `uploads/` que empiecen
-por `{id}_` y `vectores/{basename(vector_file)}`, sin tocar `documents.json` ni archivos de otros documentos.
-Respuesta `{success: true, message, deleted_id}`. Un Adaptat cuya base se retira se queda con `unidades_base_origen` vacío.
+### 7.6 Retirar (`api_retirar`) y pestaña Retirats
+Solo `S_PUB`. El registro sale de `documents.json` y se añade a `uploads/retirados.json` con los mismos campos y estado
+`Retirat` (manual) o `Retirat per nova versió` (la versión publicada anterior, al publicarse la nueva: `change_document`).
+Orden: se limpia su ID de `unidades_base_origen` y `contenidos_relacionados` en los demás documentos; se guarda `retirados.json`
+y después `documents.json` (`save_documents_and_retire`, con rollback si el segundo falla). **No se borra el original**
+(se consulta desde Retirats); en el retiro por nueva versión se borran los PDF anotados y vectores del anterior (el ID pasa a la nueva
+versión) y su `vector_file` queda a `None`. La pestaña «Retirats» (última, solo lectura: únicamente «Veure Contingut Original») sirve el
+original por `GET /download_retirat/<id>/<version>` (un mismo ID puede repetirse en varias versiones retiradas).
 
 ---
 

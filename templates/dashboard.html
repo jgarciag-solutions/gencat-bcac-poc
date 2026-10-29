@@ -4,8 +4,8 @@
 <main class="dashboard-main">
   <header class="page-header">
     <div>
-      <h1>Flux de Governança Documental</h1>
-      <p>Estat del flux de governança documental, per rol.</p>
+      <h1>Flux de Governança de Continguts</h1>
+      <p>Estat del flux de governança de continguts, per rol.</p>
     </div>
   </header>
 
@@ -24,9 +24,8 @@
   <section class="tab-pane{{ ' active' if loop.first }}" id="pane-{{ tab.slug }}" role="tabpanel"
            aria-labelledby="tab-{{ tab.slug }}">
     <div class="pane-header">
-      <p>Pendents d'acció · <span class="badge badge-{{ loop.index }}">{{ tab.status }}</span></p>
       {% if tab.slug in ('editor-departamental', 'editor-canal') %}
-      <a class="btn btn-primary" href="{{ url_for('upload', origen=tab.slug) }}">+ Puja un nou document</a>
+      <a class="btn btn-primary" href="{{ url_for('upload', origen=tab.slug) }}">+ Puja un nou contingut</a>
       {% endif %}
     </div>
 
@@ -52,13 +51,13 @@
             {% for d in tab.docs %}
             <tr>
               <td>
-                <a class="doc-title" href="{{ url_for('download', doc_id=d.id) }}">{{ d.denominacio }}</a>
-                <small>{{ d.filename }}</small>
+                {% set file_url = url_for('download_retirat', doc_id=d.id, version=d.version) if tab.slug == 'retirats' else url_for('download', doc_id=d.id) %}
+                <a class="doc-title" href="{{ file_url }}">{{ d.denominacio }}</a>
                 {% if d.observations %}
                 <div class="obs-alert" role="alert"><strong>Retornat{% if d.rechazado_por_rol %} per {{ d.rechazado_por_rol }}{% endif %}:</strong> {{ d.observations }}</div>
                 {% endif %}
               </td>
-              <td style="white-space: nowrap;">{{ d.id }}</td>
+              <td style="white-space: nowrap;">{{ d.display_id }}</td>
               <td>{{ d.content_type }}</td>
               <td>{{ d.tipologia | join(', ') or '—' }}</td>
               <td>{{ d.idioma or '—' }}</td>
@@ -73,11 +72,11 @@
                   {% set viewable = d.filename.lower().rsplit('.', 1)[-1] in ['pdf', 'png', 'jpg', 'jpeg', 'txt'] %}
                   {% if viewable %}
                   <button type="button" class="btn btn-outline-secondary btn-sm btn-ver-original"
-                          data-url="{{ url_for('download', doc_id=d.id) }}"
-                          data-filename="{{ d.filename }}"> Veure Document Original</button>
+                          data-url="{{ file_url }}"
+                          data-filename="{{ d.filename }}"> Veure Contingut Original</button>
                   {% endif %}
                   {% set needs_normative = tab.slug == 'validador-finalista' %}
-                  {% if tab.slug in ('editor-departamental', 'editor-canal') and d.observations %}
+                  {% if tab.slug in ('editor-departamental', 'editor-canal') %}
                   <a href="{{ url_for('upload', editar=d.id) }}" class="btn btn-outline-secondary btn-sm">Edita</a>
                   {% endif %}
                   {% if d.can_advance %}
@@ -118,9 +117,15 @@
                           data-title="{{ d.denominacio }}">Rebutja</button>
                   {% endif %}
                   {% if tab.slug == 'publicats' %}
-                  <a href="{{ url_for('upload', versionar=d.id) }}" class="btn btn-outline-secondary btn-sm">Crea una nova versió</a>
+                  {% if d.has_new_version %}
+                  <small>Nova versió en curs</small>
+                  {% else %}
+                  <form method="post" action="{{ url_for('nova_versio', doc_id=d.id) }}">
+                    <button type="submit" class="btn btn-outline-secondary btn-sm">Crea una nova versió</button>
+                  </form>
                   <button type="button" class="btn btn-danger btn-sm js-retirar"
                           data-url="{{ url_for('api_retirar', doc_id=d.id) }}">Retira el contingut</button>
+                  {% endif %}
                   {% endif %}
                   {% if not viewable and not d.can_advance and tab.status not in validation_states and tab.slug != 'publicats' %}
                   <small>—</small>
@@ -129,7 +134,7 @@
               </td>
             </tr>
             {% else %}
-            <tr><td colspan="11" class="empty">No hi ha documents en aquesta fase.</td></tr>
+            <tr><td colspan="11" class="empty">No hi ha continguts en aquesta fase.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -141,7 +146,7 @@
 
 <dialog id="reject-dialog" class="modal">
   <form method="post" id="reject-form">
-    <h2>Rebutja el document</h2>
+    <h2>Rebutja el contingut</h2>
     <p id="reject-title" class="hint"></p>
     <div class="field">
       <label for="reject-reason">Motiu de la devolució</label>
@@ -243,7 +248,7 @@
         return '<article class="incoherence-card' + (plain ? ' static' : '') + '"' +
           (plain ? '' : ' data-page="' + esc(page || 1) + '" tabindex="0" role="button" title="Veure al PDF"') + '>' + head +
           '<p><strong>Frase analitzada:</strong> ' + esc(item.frase_analizada) + '</p>' +
-          (item.texto_infrinjido ? '<p><strong>Document / Normativa infringida:</strong> ' + esc(item.texto_infrinjido) + '</p>' : '') +
+          (item.texto_infrinjido ? '<p><strong>Contingut / Normativa infringida:</strong> ' + esc(item.texto_infrinjido) + '</p>' : '') +
           '<p><strong>Explicació:</strong> ' + esc(item.explicacion) + '</p>' +
           (item.propuesta ? '<div class="proposal"><strong>Proposta de millora:</strong> ' + esc(item.propuesta) + '</div>' : '') +
           '</article>';
@@ -353,11 +358,11 @@
     }
 
     // Documento original (todas las pestañas): <iframe> único al 100% del ancho, con toggle.
-    var ORIGINAL_LABEL = 'Veure Document Original';
+    var ORIGINAL_LABEL = 'Veure Contingut Original';
     function setOriginalLabel(btn, open, text) {
       var tr = btn.closest('tr');
       var row = tr.classList.contains('expandable-row') ? tr : tr.nextElementSibling;
-      var label = text || (open ? 'Amagar Document Original' : ORIGINAL_LABEL);
+      var label = text || (open ? 'Amagar Contingut Original' : ORIGINAL_LABEL);
       [tr, row].forEach(function (scope) {
         if (scope && scope.querySelectorAll) scope.querySelectorAll('.btn-ver-original').forEach(function (b) { b.textContent = label; });
       });
@@ -383,10 +388,10 @@
           var holder = ensureRow(btn).querySelector('.original-viewer');
           holder.textContent = '';
           var title = document.createElement('h4');
-          title.textContent = 'Document original · ' + (btn.dataset.filename || '');
+          title.textContent = 'Contingut original · ' + (btn.dataset.filename || '');
           var frame = document.createElement('iframe');
           frame.className = 'pdf-frame';
-          frame.title = 'Document original';
+          frame.title = 'Contingut original';
           frame.src = btn.dataset.url;
           holder.appendChild(title);
           holder.appendChild(frame);
@@ -410,7 +415,7 @@
         .then(function () { btn.disabled = false; });
     }
 
-    // Retirar contenido (pestaña Publicados): borrado físico y lógico, sin diálogo de confirmación.
+    // Retirar contenido (pestaña Publicados): pasa a Retirats, sin diálogo de confirmación.
     document.querySelectorAll('.js-retirar').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var tr = btn.closest('tr');
@@ -434,9 +439,10 @@
               if (counter) counter.textContent = Math.max(0, (parseInt(counter.textContent, 10) || 0) - 1);
               if (!tbody.querySelector('tr')) { // la pestaña se queda sin documentos
                 var empty = document.createElement('tr');
-                empty.innerHTML = '<td colspan="11" class="empty">No hi ha documents en aquesta fase.</td>';
+                empty.innerHTML = '<td colspan="11" class="empty">No hi ha continguts en aquesta fase.</td>';
                 tbody.appendChild(empty);
               }
+              location.reload(); // el documento aparece ya en la pestaña Retirats
             }, 350);
           })
           .catch(function (err) { // error en línea, sin pop-ups
@@ -496,12 +502,24 @@
         if (stored && typeof stored === 'object') btn.dataset.result = JSON.stringify(stored);
       }
 
+      // Carga una URL en el visor. Cambiar solo el #page=N de un <iframe> ya cargado no hace saltar de página a
+      // muchos visores de PDF (el documento es el mismo y no se vuelve a abrir), así que se sustituye el elemento
+      // para forzar una navegación nueva.
+      function loadFrame(url) {
+        var fresh = document.createElement('iframe');
+        fresh.className = 'pdf-frame';
+        fresh.title = frame ? frame.title : 'PDF anotat';
+        fresh.src = url;
+        if (frame && frame.parentNode === viewer) viewer.replaceChild(fresh, frame); else viewer.appendChild(fresh);
+        frame = fresh;
+      }
+
       // Salta a la página N y confirma visualmente la sincronización.
       function jumpTo(page, card) {
         lastPage = page;
         if (showingOriginal) { showingOriginal = false; setOriginalLabel(btn, false); }
+        loadFrame(pdfUrl + '#page=' + page);
         frame.hidden = false;
-        frame.src = pdfUrl + '#page=' + page;
         button.textContent = 'Amagar PDF anotat';
         box.parentElement.querySelectorAll('.incoherence-card.active').forEach(function (c) { c.classList.remove('active'); });
         if (card) card.classList.add('active');
@@ -523,12 +541,10 @@
           .then(function (data) {
             if (data.ok) {
               pdfUrl = data.pdf_url;
-              frame = document.createElement('iframe');
-              frame.className = 'pdf-frame';
-              frame.title = 'PDF anotat';
-              viewer.appendChild(frame);
               applyPages(data.incoherencias || []);
-              jumpTo(page || Number(card && card.dataset.page) || 1, card);
+              // La tarjeta pulsada ya lleva la página real (applyPages); la recibida como argumento era la
+              // provisional (1) de antes de generar el PDF, y tenía prioridad: siempre se saltaba a la primera página.
+              jumpTo(Number(card && card.dataset.page) || page || 1, card);
               setStatus(data.mensaje || '', false);
             } else {
               button.textContent = LABEL;
@@ -542,11 +558,11 @@
           .then(function () { button.disabled = false; });
       }
 
-      // El botón "Veure Document Original" reutiliza este mismo <iframe> cuando ya existe.
+      // El botón "Veure Contingut Original" reutiliza este mismo <iframe> cuando ya existe.
       function showAnnotated() {
         showingOriginal = false;
+        loadFrame(pdfUrl + '#page=' + lastPage);
         frame.hidden = false;
-        frame.src = pdfUrl + '#page=' + lastPage;
         button.textContent = 'Amagar PDF anotat';
         setOriginalLabel(btn, false);
       }
@@ -554,8 +570,8 @@
         if (!frame) return false; // sin visor anotado, el llamador abre el visor del original
         if (showingOriginal) { showAnnotated(); return true; }
         showingOriginal = true;
+        loadFrame(originalUrl);
         frame.hidden = false;
-        frame.src = originalUrl;
         button.textContent = 'Veure PDF anotat';
         setOriginalLabel(btn, false, 'Veure PDF anotat');
         frame.scrollIntoView({ behavior: 'smooth', block: 'nearest' });

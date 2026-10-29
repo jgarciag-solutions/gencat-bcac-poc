@@ -88,8 +88,10 @@ def detect_document_duplicity(target_doc_id, documents_data, vectors_dir="vector
     target = next((d for d in documents_data if d.get("id") == target_doc_id), None)
     if target is None:
         return "No s'ha trobat el document a analitzar."
+    # La versión publicada que esta nueva versión sustituirá no cuenta como duplicado.
     others = [d for d in documents_data
-              if d.get("id") != target_doc_id and d.get("status") == PUBLISHED_STATUS]
+              if d.get("id") not in (target_doc_id, target.get("version_de"))
+              and d.get("status") == PUBLISHED_STATUS]
     config = _load_config(config_path)
     max_distance = int(config["simhash_max_distance"])
     threshold = float(config["vector_similarity_threshold"])

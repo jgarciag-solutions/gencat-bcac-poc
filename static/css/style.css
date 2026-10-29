@@ -151,6 +151,7 @@ td small { color: var(--color-muted); display: block; }
 .badge-5 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Gestor Base: Violeta */
 .badge-6 { background: #fffdfd; color: #c80000; border: 1px solid #c80000; } /* Gestor Canal: Teal */
 .badge-7 { background: #c80000; color: #fffdfd; border: 1px solid #c80000; } /* Publicada: Verde */
+.badge-8 { background: #f1f1f1; color: #555; border: 1px solid #999; } /* Retirat */
 
 /* Formularios */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }

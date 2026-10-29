@@ -1,7 +1,9 @@
 """POC BCAC - Flujo de gobernanza documental (Flask, persistencia en JSON)."""
+import copy
 import json
 import os
 import re
+import shutil
 import threading
 from datetime import date, datetime, timedelta
 from functools import wraps
@@ -27,6 +29,7 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "poc-bcac-clave-solo-dem
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
 DOCUMENTS_FILE = os.path.join(UPLOAD_FOLDER, "documents.json")
+RETIRADOS_FILE = os.path.join(UPLOAD_FOLDER, "retirados.json")  # documentos que dejan de estar publicados
 DOCS_LOCK = threading.RLock()
 ID_COUNTER_FILE = os.path.join(UPLOAD_FOLDER, "id_counter.json")  # último número de ID emitido (nunca se reutiliza)
 ID_RE = re.compile(r"^BCAC-[AB]-(\d+)$")
@@ -47,6 +50,8 @@ S_UF = "En validació - Pdt. Unitat Finalista"
 S_GCB = "En validació - Pdt. Gestor Coneixement Cord"
 S_GCC = "En validació - Pdt. Gestor Coneixement Canal"
 S_PUB = "Publicat"
+S_RET = "Retirat"  # retirado manualmente desde Publicats
+S_RET_VER = "Retirat per nova versió"  # sustituido al publicarse su nueva versión
 STATES = [S_ED, S_EC, S_RD, S_UF, S_GCB, S_GCC, S_PUB]
 
 CONTENT_TYPES = ["Base", "Adaptat", "Referenciat"]
@@ -64,21 +69,25 @@ VALIDATION_STATES = {S_RD, S_UF, S_GCB, S_GCC}
 # Pestañas del dashboard: cada rol ve los documentos en su micro-estado.
 TABS = [
     {"role": "Editor Departamental", "slug": "editor-departamental", "status": S_ED},
-    {"role": "Editor Canal", "slug": "editor-canal", "status": S_EC},
+    
     {"role": "Referent Departamental", "slug": "referent-departamental", "status": S_RD},
-    {"role": "Validador Finalista", "slug": "validador-finalista", "status": S_UF},
-    {"role": "Gestor Coneixement Cord", "slug": "gestor-coneixement-base", "status": S_GCB},
+    {"role": "Validador de la unitat finalista", "slug": "validador-finalista", "status": S_UF},
+    {"role": "Gestor Coneixement Coord", "slug": "gestor-coneixement-base", "status": S_GCB},
+    {"role": "Editor de Canal", "slug": "editor-canal", "status": S_EC},
     {"role": "Gestor Coneixement Canal", "slug": "gestor-coneixement-canal", "status": S_GCC},
     {"role": "Publicats", "slug": "publicats", "status": S_PUB},
 ]
 
+# Pestaña de solo lectura con los documentos de retirados.json (no forma parte del flujo).
+RETIRED_TAB = {"role": "Retirats", "slug": "retirats", "status": None}
+
 ACTION_LABEL = {
-    S_ED: "Aprovar",
-    S_EC: "Aprovar",
-    S_RD: "Aprovar",
-    S_UF: "Aprovar",
-    S_GCB: "Aprovar",
-    S_GCC: "Aprovar",
+    S_ED: "Enviar a revisió",
+    S_EC: "Envia a validació",
+    S_RD: "Envia a validació",
+    S_UF: "Validar",
+    S_GCB: "Publicar",
+    S_GCC: "Valida i publica",
 }
 
 # Estado inicial / destino de devolución según el tipo de contenido.
@@ -104,6 +113,7 @@ TIPOLOGIAS = [
 ]
 
 CANALES = ["WEB", "Xarxes", "Presencial", "012"]
+RESPONSABLES = ["Família i infants", "Gent gran", "Joventut"]
 
 DEPARTMENTS = [
     "Drets Socials i Inclusio",
@@ -160,11 +170,12 @@ def ensure_documents_file():
         write_json([])
 
 
-def write_json(docs):
-    tmp = DOCUMENTS_FILE + ".tmp"
+def write_json(docs, path=None):
+    path = path or DOCUMENTS_FILE
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(docs, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, DOCUMENTS_FILE)  # escritura atómica
+    os.replace(tmp, path)  # escritura atómica
 
 
 def normalize(doc):
@@ -179,6 +190,8 @@ def normalize(doc):
     doc.setdefault("unidades_base_origen", [])
     doc.setdefault("departamentos_competentes", [])
     doc.setdefault("canal", "")
+    doc.setdefault("version_de", "")  # id del publicado al que sustituirá esta nueva versión cuando se publique
+    doc.setdefault("responsables", [])  # Cicle de vida: 1 valor en Base, unión de las bases en Adaptat
     doc.setdefault("fecha_publicacion", None)
     doc.setdefault("fecha_revision_prevista", None)
     doc.setdefault("contenidos_relacionados", [])
@@ -218,6 +231,36 @@ def load_documents():
 def save_documents(docs):
     with DOCS_LOCK:
         write_json(docs)
+
+
+def load_retirados():
+    """Documentos retirados (uploads/retirados.json); [] si no existe o no es legible."""
+    with DOCS_LOCK:
+        try:
+            with open(RETIRADOS_FILE, encoding="utf-8") as fh:
+                docs = json.load(fh)
+            if not isinstance(docs, list):
+                raise ValueError("retirados.json no contiene una lista")
+            return [normalize(d) for d in docs]
+        except FileNotFoundError:
+            return []
+        except (ValueError, OSError):
+            app.logger.exception("retirados.json no es legible; se conserva una copia y se reinicia.")
+            os.replace(RETIRADOS_FILE, RETIRADOS_FILE + ".corrupt")
+            return []
+
+
+def save_documents_and_retire(docs, retired):
+    """Guarda `docs` y añade `retired` [(registro, estado)] a retirados.json con los mismos datos y el nuevo estado.
+    Primero retirados.json; si falla el guardado de documents.json se restaura, para no duplicar registros."""
+    with DOCS_LOCK:
+        previous = load_retirados()
+        write_json(previous + [{**doc, "status": status} for doc, status in retired], RETIRADOS_FILE)
+        try:
+            save_documents(docs)
+        except OSError:
+            write_json(previous, RETIRADOS_FILE)
+            raise
 
 
 ensure_documents_file()
@@ -273,6 +316,76 @@ def next_document_id(content_type, docs):
 
 def find_doc(docs, doc_id):
     return next((d for d in docs if d["id"] == doc_id), None)
+
+
+VERSION_SUFFIX_RE = re.compile(r"-v\d+$")
+
+
+def display_id(doc_id):
+    """ID visible: las nuevas versiones se guardan como `BCAC-B-0001-v2` pero el contenido sigue siendo BCAC-B-0001."""
+    return VERSION_SUFFIX_RE.sub("", doc_id)
+
+
+def pending_version(docs, doc_id):
+    """Nueva versión en curso (aún sin publicar) del documento publicado `doc_id`, o None."""
+    return next((d for d in docs if d.get("version_de") == doc_id), None)
+
+
+def delete_document_files(doc, remaining, keep_original=False):
+    """Borra los archivos de un documento ya eliminado de `remaining`: el original (salvo `keep_original`, para los
+    retirados, que se siguen consultando), sus PDF anotados ({id}_...) y sus vectores. Nunca toca documents.json ni
+    archivos que usen otros documentos."""
+    keep = {"documents.json", "retirados.json"} | {d.get("filename") for d in remaining}
+    if keep_original:
+        keep.add(doc.get("filename"))
+    folder = app.config["UPLOAD_FOLDER"]
+    targets = {doc.get("filename") or ""}
+    targets.update(f for f in os.listdir(folder) if f.startswith(f"{doc['id']}_"))
+    paths = [os.path.join(folder, f) for f in targets if f and f not in keep]
+    if doc.get("vector_file"):
+        paths.append(os.path.join(BASE_DIR, "vectores", os.path.basename(doc["vector_file"])))
+    for path in paths:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            app.logger.exception("No se pudo eliminar %s", path)
+
+
+def replace_published_version(docs, doc):
+    """Al publicar una nueva versión, retira de `docs` la versión publicada anterior y la nueva hereda su ID (las
+    referencias de otros documentos siguen siendo válidas). Devuelve (registro retirado, id provisional de la nueva)
+    para que el llamador mueva los archivos; o None si no sustituye a ninguna."""
+    old_id = doc.get("version_de")
+    if not old_id:
+        return None
+    doc["version_de"] = ""
+    old = find_doc(docs, old_id)
+    if old is None:
+        return None
+    docs.remove(old)
+    draft_id = doc["id"]
+    doc["id"] = old_id
+    if doc.get("vector_file"):
+        doc["vector_file"] = f"vectores/{old_id}_vectors.json"
+    return old, draft_id
+
+
+def move_version_files(draft_id, final_id):
+    """Renombra los archivos que cuelgan del ID provisional ({id}_...: PDF anotados y vectores) al ID definitivo."""
+    folder = app.config["UPLOAD_FOLDER"]
+    moves = [(os.path.join(folder, f), os.path.join(folder, final_id + f[len(draft_id):]))
+             for f in os.listdir(folder) if f.startswith(f"{draft_id}_")]
+    vectors = os.path.join(BASE_DIR, "vectores")
+    moves.append((os.path.join(vectors, f"{draft_id}_vectors.json"), os.path.join(vectors, f"{final_id}_vectors.json")))
+    for src, dst in moves:
+        try:
+            os.replace(src, dst)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            app.logger.exception("No se pudo renombrar %s a %s", src, dst)
 
 
 def filename_exists(filename, docs, exclude_id=None):
@@ -377,7 +490,7 @@ def ai_agent_enabled(config_key):
 
 def simulated_ai_result(kind):
     """Informe 'conforme' sin incoherencias, con el mismo formato que devuelve cada agente real."""
-    message = "Document conforme (anàlisi simulada: agent IA desactivat)."
+    message = "Contingut conforme (anàlisi simulada: agent IA desactivat)."
     if kind == "fidelitat":
         return {"fiel": True, "mensaje": message, "incoherencias": [], "simulado": True}
     return {"conforme": True, "missatge": message, "incoherencies": [], "simulado": True}
@@ -448,6 +561,8 @@ def logout():
 def dashboard():
     docs = load_documents()
     rows = [{**d, "department": ", ".join(d["departamentos_competentes"]),
+             "display_id": display_id(d["id"]),
+             "has_new_version": pending_version(docs, d["id"]) is not None,
              "can_advance": can_advance(d),
              "action": ACTION_LABEL.get(d["status"], ""),
              "badge": STATES.index(d["status"]) + 1 if d["status"] in STATES else 0}
@@ -457,17 +572,20 @@ def dashboard():
     rows.reverse()
     rows.sort(key=lambda d: d.get("fecha_publicacion") or "", reverse=True)
     tabs = [{**t, "docs": [d for d in rows if d["status"] == t["status"]]} for t in TABS]
+    retired = [{**d, "department": ", ".join(d["departamentos_competentes"]), "display_id": display_id(d["id"]),
+                "has_new_version": False, "can_advance": False, "action": "", "badge": len(STATES) + 1}
+               for d in reversed(load_retirados())]  # los últimos retirados primero
+    tabs.append({**RETIRED_TAB, "docs": retired})
     return render_template("dashboard.html", tabs=tabs, validation_states=VALIDATION_STATES)
 
 
 def render_upload(form, selected_sources=(), selected_tipologia=(), selected_departments=(), selected_related=(), origen="", target_doc=None):
     docs = load_documents()
-    # Con documento objetivo: publicado = nueva versión; en la bandeja del editor = edición (sin cambiar de versión).
-    edit_mode = target_doc is not None and target_doc["status"] != S_PUB
+    edit_mode = target_doc is not None
     back_anchor = tab_anchor(target_doc["status"]) if target_doc else ""
     return render_template("upload.html", form=form, taxonomies=taxonomy_paths(),
                            departments=departamentos_competentes(), content_types=CONTENT_TYPES,
-                           canales=CANALES, published_docs=[d for d in docs if d["status"] == S_PUB],
+                           canales=CANALES, responsables=RESPONSABLES, published_docs=[d for d in docs if d["status"] == S_PUB],
                            selected_departments=list(selected_departments), selected_related=list(selected_related),
                            idiomas=IDIOMAS, tipologias=TIPOLOGIAS, selected_tipologia=list(selected_tipologia),
                            base_docs=published_base_docs(docs),
@@ -476,27 +594,21 @@ def render_upload(form, selected_sources=(), selected_tipologia=(), selected_dep
                            extensions=sorted(ALLOWED_EXTENSIONS))
 
 
-def can_update(doc, edit):
-    """¿Admite el documento la operación? Edición: devuelto a su editor; nueva versión: publicado."""
-    if doc is None:
-        return False
-    if edit:
-        return doc["status"] in EDITOR_STATES and bool(doc["observations"])
-    return doc["status"] == S_PUB
+def can_update(doc):
+    """¿Se puede editar el documento? Siempre que esté en la bandeja de su editor (en elaboración)."""
+    return doc is not None and doc["status"] in EDITOR_STATES
 
 
-def save_document_update(doc_id, file, fields, user, edit):
+def save_document_update(doc_id, file, fields, user):
     """Guarda los datos del formulario sobre un documento existente.
 
-    `edit=False`: nueva versión de un documento publicado (version += 1, vuelve a la bandeja de su editor).
-    `edit=True`: edición de un documento devuelto en la bandeja de su editor (misma versión y mismo estado;
-    el motivo de la devolución se mantiene hasta que se apruebe).
+    Edición de un documento en la bandeja de su editor (misma versión y mismo estado; el motivo de la devolución,
+    si lo hay, se mantiene hasta que se apruebe). Las nuevas versiones se crean con `nova_versio`.
     Si llega un archivo nuevo, sustituye al anterior (original, PDF anotados y vectores).
     Devuelve la redirección al dashboard, o None si falla (el aviso ya se ha hecho con flash).
     """
-    not_allowed = ("Només es poden editar documents retornats a l'editor." if edit
-                   else "Només es pot versionar un document publicat.")
-    no_longer = "El document ja no es pot editar." if edit else "El document ja no es pot versionar."
+    not_allowed = "Només es poden editar continguts en elaboració."
+    no_longer = "El contingut ja no es pot editar."
     new_name = None
     if file and file.filename:
         new_name = secure_filename(file.filename)
@@ -509,7 +621,7 @@ def save_document_update(doc_id, file, fields, user, edit):
     with DOCS_LOCK:  # reserva el nombre: tras guardar el archivo, otro upload igual se detecta
         docs = load_documents()
         doc = find_doc(docs, doc_id)
-        if not can_update(doc, edit):
+        if not can_update(doc):
             flash(not_allowed, "error")
             return None
         if new_name:
@@ -528,7 +640,7 @@ def save_document_update(doc_id, file, fields, user, edit):
     with DOCS_LOCK:  # se vuelve a leer: el JSON pudo cambiar durante el procesado
         docs = load_documents()
         doc = find_doc(docs, doc_id)
-        if not can_update(doc, edit):
+        if not can_update(doc):
             if new_name and (doc is None or doc.get("filename") != new_name) and os.path.exists(path):
                 os.remove(path)
             flash(no_longer, "error")
@@ -544,12 +656,6 @@ def save_document_update(doc_id, file, fields, user, edit):
                 old_paths.append(vector_path(doc["vector_file"]))
             doc["filename"], doc["simhash"], doc["vector_file"] = new_name, simhash, vector_file
         doc.update(fields)
-        if not edit:
-            doc["version"] = int(doc.get("version", 1)) + 1
-            doc["status"] = EDITOR_STATE[doc["content_type"]]
-            doc["observations"] = doc["rechazado_por_rol"] = ""
-            doc["fecha_publicacion"] = doc["fecha_revision_prevista"] = None  # se rellenan al volver a publicar
-            reset_ai_analysis(doc)
         doc["updated_by"] = user["username"]
         try:
             save_documents(docs)  # primero el registro: si falla, no se borra ningún archivo anterior
@@ -557,7 +663,7 @@ def save_document_update(doc_id, file, fields, user, edit):
             app.logger.exception("No se pudo guardar documents.json al actualizar %s", doc_id)
             flash("No s'han pogut desar els canvis. Torna-ho a provar.", "error")
             return None
-        status, version, title = doc["status"], doc["version"], doc["denominacio"]
+        status, title = doc["status"], doc["denominacio"]
 
     for old in old_paths:
         try:
@@ -566,10 +672,7 @@ def save_document_update(doc_id, file, fields, user, edit):
             pass
         except OSError:
             app.logger.exception("No se pudo eliminar %s", old)
-    if edit:
-        done = f"Document «{title}» actualitzat."
-    else:
-        done = f"Nova versió {version} creada: el document torna a «{status}»."
+    done = f"Contingut «{title}» actualitzat."
     if new_name and not vector_file and load_config().get("embeddings_activos", True):
         flash(done.rstrip(".") + ", però no s'han generat els vectors "
               "(revisa l'API key o la quota de Gemini).", "warning")
@@ -589,26 +692,21 @@ def upload():
     origen = (request.form.get("origen") if request.method == "POST" else request.args.get("origen", "")) or ""
     origen = origen.strip()
 
-    # Documento objetivo: /upload?versionar=<id> (nueva versión de un publicado) o /upload?editar=<id> (edición de un
-    # devuelto). El POST los recibe en `versionar_id` / `editar_id`.
+    # Documento objetivo: /upload?editar=<id> (edición de un contenido en la bandeja de su editor). El POST lo
+    # recibe en `editar_id`.
     post = request.method == "POST"
-    versionar_id = (request.form.get("versionar_id") if post else request.args.get("versionar")) or ""
-    editar_id = "" if versionar_id else (request.form.get("editar_id") if post else request.args.get("editar")) or ""
-    edit = bool(editar_id)
-    target_id = versionar_id or editar_id
+    target_id = (request.form.get("editar_id") if post else request.args.get("editar")) or ""
     target_doc = None
     if target_id:
         target_doc = find_doc(load_documents(), target_id)
-        if not can_update(target_doc, edit):
-            if edit:
-                flash("Només es poden editar documents retornats a l'editor.", "error")
-                return redirect(url_for("dashboard") + (tab_anchor(target_doc["status"]) if target_doc else ""))
-            flash("Només es pot versionar un document publicat.", "error")
-            return redirect(url_for("dashboard") + tab_anchor(S_PUB))
+        if not can_update(target_doc):
+            flash("Només es poden editar continguts en elaboració.", "error")
+            return redirect(url_for("dashboard") + (tab_anchor(target_doc["status"]) if target_doc else ""))
         if request.method == "GET":
             form = {"denominacio": target_doc["denominacio"], "content_type": target_doc["content_type"],
                     "idioma": target_doc.get("idioma") or "",
                     "canal": target_doc.get("canal") or "",
+                    "responsable": (target_doc["responsables"] or [""])[0] if target_doc["content_type"] != "Adaptat" else "",
                     "taxonomy": target_doc["taxonomy"][0] if target_doc["taxonomy"] else ""}
             selected_tipologia = list(target_doc["tipologia"])
             selected_departments = list(target_doc["departamentos_competentes"])
@@ -616,7 +714,7 @@ def upload():
             selected_related = list(target_doc["contenidos_relacionados"])
 
     if request.method == "POST":
-        form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "idioma", "canal")}
+        form = {k: request.form.get(k, "").strip() for k in ("taxonomy", "idioma", "canal", "responsable")}
         # Familia «Identificación»: todos sus campos son obligatorios.
         form["denominacio"] = request.form.get("denominacio", "").strip()
         form["content_type"] = (target_doc["content_type"] if target_doc  # el tipo no cambia al versionar ni al editar
@@ -641,7 +739,7 @@ def upload():
         elif any(t not in TIPOLOGIAS for t in selected_tipologia):
             errors.append("Alguna opció de Tipologia no és vàlida.")
         if not file or not file.filename:
-            if not target_doc:  # al versionar o editar el archivo es opcional: si no se sube, se mantiene el anterior
+            if not target_doc:  # al editar el archivo es opcional: si no se sube, se mantiene el anterior
                 errors.append("Has de seleccionar un fitxer.")
         elif not allowed_file(file.filename):
             errors.append("Tipus de fitxer no permès. Formats vàlids: "
@@ -650,7 +748,7 @@ def upload():
             errors.append("El tipus de contingut no és vàlid.")
 
         # Reglas por tipo de contenido (los campos que no aplican al tipo se ignoran).
-        taxonomy, source, departments, canal = [], [], [], ""
+        taxonomy, source, departments, canal, responsables = [], [], [], "", []
         valid_departments = departamentos_competentes()
         if form["content_type"] in ("Base", "Referenciat"):
             if not selected_departments:
@@ -662,18 +760,27 @@ def upload():
             if form["taxonomy"] not in taxonomy_paths():
                 errors.append("Selecciona una taxonomia vàlida.")
             taxonomy = [form["taxonomy"]]  # lista de un elemento; la fuente original no aplica
+            # Familia «Cicle de vida»: un único responsable obligatorio.
+            if not form["responsable"]:
+                errors.append("Falta el camp obligatori «Responsable».")
+            elif form["responsable"] not in RESPONSABLES:
+                errors.append("El responsable seleccionat no és vàlid.")
+            else:
+                responsables = [form["responsable"]]
         elif form["content_type"] == "Adaptat":
             # Se ignora cualquier taxonomía manual: se hereda de las unidades base seleccionadas.
             available = {d["id"]: d for d in published_base_docs(load_documents())}
             if not selected_sources:
-                errors.append("Falta el camp obligatori «Unitat base d'origen»: selecciona almenys un document base publicat.")
+                errors.append("Falta el camp obligatori «Unitat base d'origen»: selecciona almenys un contingut base publicat.")
             elif any(i not in available for i in selected_sources):
-                errors.append("Alguna unitat base d'origen no és un document base publicat.")
+                errors.append("Alguna unitat base d'origen no és un contingut base publicat.")
             else:
                 source = selected_sources
                 taxonomy = list(dict.fromkeys(t for i in source for t in available[i]["taxonomy"]))
                 # El departamento tampoco se elige: se hereda de las unidades base (unión sin duplicados).
                 departments = list(dict.fromkeys(dep for i in source for dep in available[i]["departamentos_competentes"]))
+                # El responsable tampoco se elige: se hereda de las unidades base (puede haber más de uno).
+                responsables = list(dict.fromkeys(r for i in source for r in available[i]["responsables"]))
             if not form["canal"]:
                 errors.append("Falta el camp obligatori «Canal».")
             elif form["canal"] not in CANALES:
@@ -685,7 +792,7 @@ def upload():
         if selected_related:
             published_ids = {d["id"] for d in load_documents() if d["status"] == S_PUB}
             if any(i not in published_ids for i in selected_related):
-                errors.append("Algun contingut relacionat no és un document publicat.")
+                errors.append("Algun contingut relacionat no és un contingut publicat.")
 
         if errors:
             for e in errors:
@@ -695,8 +802,8 @@ def upload():
             fields = {"denominacio": form["denominacio"], "idioma": form["idioma"], "tipologia": selected_tipologia,
                       "taxonomy": taxonomy, "departamentos_competentes": departments,
                       "unidades_base_origen": source, "canal": canal,
-                      "contenidos_relacionados": selected_related}
-            response = save_document_update(target_id, file, fields, user, edit)
+                      "responsables": responsables, "contenidos_relacionados": selected_related}
+            response = save_document_update(target_id, file, fields, user)
             if response is not None:
                 return response
         else:
@@ -725,6 +832,7 @@ def upload():
                         "departamentos_competentes": departments,
                         "unidades_base_origen": source,
                         "canal": canal,
+                        "responsables": responsables,
                         "contenidos_relacionados": selected_related,
                         "fecha_publicacion": None,
                         "fecha_revision_prevista": None,
@@ -755,12 +863,12 @@ def upload():
                         os.remove(path)
                         if vector_file:
                             os.remove(os.path.join(BASE_DIR, vector_file))
-                        flash("No s'ha pogut desar el document. Torna-ho a provar.", "error")
+                        flash("No s'ha pogut desar el contingut. Torna-ho a provar.", "error")
                         return render_upload(form, selected_sources, selected_tipologia, selected_departments, selected_related, origen, target_doc)
                     if vector_file or not load_config().get("embeddings_activos", True):
-                        flash("Document pujat. El document queda en elaboració.", "success")
+                        flash("Contingut pujat. El contingut queda en elaboració.", "success")
                     else:
-                        flash("Document pujat en elaboració, però no s'han generat els vectors "
+                        flash("Contingut pujat en elaboració, però no s'han generat els vectors "
                               "(revisa l'API key o la quota de Gemini).", "warning")
                     return redirect(url_for("dashboard"))
 
@@ -784,9 +892,76 @@ def change_document(doc_id, action):
         if result is None:
             return redirect(url_for("dashboard") + origin)
         doc["updated_by"] = user["username"]
-        save_documents(docs)
+        replaced = replace_published_version(docs, doc) if doc["status"] == S_PUB else None
+        if replaced:
+            old, draft_id = replaced
+            old["vector_file"] = None  # sus vectores ({id}_vectors.json) pasan a la nueva versión
+            save_documents_and_retire(docs, [(old, S_RET_VER)])  # primero el registro: si falla, no se toca ningún archivo
+            # Libera los nombres {id}_... que pasan a la nueva versión; el original queda para consultarlo en Retirats.
+            delete_document_files(old, docs, keep_original=True)
+            move_version_files(draft_id, doc["id"])
+        else:
+            save_documents(docs)
     flash(*result)
     return redirect(url_for("dashboard") + origin)
+
+
+@app.route("/nova_versio/<doc_id>", methods=["POST"])
+@login_required
+def nova_versio(doc_id):
+    """Crea una nueva versión de un contenido publicado: un registro nuevo (copia del publicado) en la bandeja de su
+    editor. La versión publicada sigue vigente hasta que se publique la nueva, que la sustituye."""
+    user = current_user()
+    with DOCS_LOCK:
+        docs = load_documents()
+        published = find_doc(docs, doc_id)
+        if published is None:
+            abort(404)
+        if published["status"] != S_PUB:
+            flash("Només es pot versionar un contingut publicat.", "error")
+            return redirect(url_for("dashboard") + tab_anchor(S_PUB))
+        if pending_version(docs, doc_id):
+            flash("Aquest contingut ja té una nova versió en curs.", "error")
+            return redirect(url_for("dashboard") + tab_anchor(S_PUB))
+
+        version = int(published.get("version", 1)) + 1
+        new_id = f"{display_id(doc_id)}-v{version}"
+        folder = app.config["UPLOAD_FOLDER"]
+        stem, ext = os.path.splitext(published.get("filename") or "")
+        new_name, n = f"{stem}_v{version}{ext}", version
+        while filename_exists(new_name, docs):  # copia propia: editar la nueva versión no toca el publicado
+            n += 1
+            new_name = f"{stem}_v{n}{ext}"
+        copies = []
+        try:
+            shutil.copy2(os.path.join(folder, published["filename"]), os.path.join(folder, new_name))
+            copies.append(os.path.join(folder, new_name))
+            vector_file = None
+            if published.get("vector_file"):
+                vector_file = f"vectores/{new_id}_vectors.json"
+                shutil.copy2(os.path.join(BASE_DIR, "vectores", os.path.basename(published["vector_file"])),
+                             os.path.join(BASE_DIR, vector_file))
+                copies.append(os.path.join(BASE_DIR, vector_file))
+            draft = copy.deepcopy(published)
+            draft.update({"id": new_id, "filename": new_name, "vector_file": vector_file, "version": version,
+                          "version_de": doc_id, "status": EDITOR_STATE[published["content_type"]],
+                          "observations": "", "rechazado_por_rol": "", "fecha_publicacion": None,
+                          "fecha_revision_prevista": None, "updated_by": user["username"]})
+            reset_ai_analysis(draft)
+            docs.append(draft)
+            save_documents(docs)
+        except OSError:
+            app.logger.exception("No se pudo crear la nueva versión de %s", doc_id)
+            for path in copies:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            flash("No s'ha pogut crear la nova versió. Torna-ho a provar.", "error")
+            return redirect(url_for("dashboard") + tab_anchor(S_PUB))
+    flash(f"Nova versió {version} creada: el contingut ha passat a «{draft['status']}». "
+          "La versió publicada continua vigent fins que es publiqui la nova.", "success")
+    return redirect(url_for("dashboard") + tab_anchor(draft["status"]))
 
 
 @app.route("/avanzar_estado/<doc_id>", methods=["POST"])
@@ -795,7 +970,7 @@ def avanzar_estado(doc_id):
     def action(doc, _user):
         new = next_status(doc)
         if new is None:
-            flash("Aquest document no pot avançar des del seu estat actual.", "error")
+            flash("Aquest contingut no pot avançar des del seu estat actual.", "error")
             return None
         doc["status"] = new
         doc["observations"] = doc["rechazado_por_rol"] = ""
@@ -814,7 +989,7 @@ def rechazar(doc_id):
 
     def action(doc, _user):
         if doc["status"] not in VALIDATION_STATES:
-            flash("Només es poden rebutjar documents en validació.", "error")
+            flash("Només es poden rebutjar continguts en validació.", "error")
             return None
         if not reason:
             flash("Has d'indicar el motiu de la devolució.", "error")
@@ -830,16 +1005,20 @@ def rechazar(doc_id):
 
 @app.route("/api/documents/retirar/<doc_id>", methods=["POST"])
 def api_retirar(doc_id):
-    """Retira un documento publicado: borra sus archivos, su registro y las referencias a él."""
+    """Retira un documento publicado: lo pasa de documents.json a retirados.json (con sus archivos, solo consulta) y
+    quita las referencias a él."""
     if current_user() is None:
         return jsonify(success=False, error="Sessió no iniciada."), 401
     with DOCS_LOCK:
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(success=False, error="Document no trobat."), 404
+            return jsonify(success=False, error="Contingut no trobat."), 404
         if doc["status"] != S_PUB:
-            return jsonify(success=False, error="Només es pot retirar un document publicat."), 409
+            return jsonify(success=False, error="Només es pot retirar un contingut publicat."), 409
+
+        if pending_version(docs, doc_id):
+            return jsonify(success=False, error="Aquest contingut té una nova versió en curs; no es pot retirar."), 409
 
         remaining = [d for d in docs if d["id"] != doc_id]
         for other in remaining:  # integridad referencial: sin referencias huérfanas al documento retirado
@@ -847,28 +1026,11 @@ def api_retirar(doc_id):
                 if isinstance(other.get(key), list):
                     other[key] = [i for i in other[key] if i != doc_id]
         try:
-            save_documents(remaining)  # primero el registro: si falla, no se borra ningún archivo
+            save_documents_and_retire(remaining, [(doc, S_RET)])
         except OSError:
             app.logger.exception("No se pudo guardar documents.json al retirar %s", doc_id)
-            return jsonify(success=False, error="No s'ha pogut actualitzar la base documental."), 500
-
-        # Archivos del documento: el original, sus PDF anotados ({id}_...) y su archivo de vectores.
-        keep = {"documents.json"} | {d.get("filename") for d in remaining}  # nunca archivos de otros documentos
-        folder = app.config["UPLOAD_FOLDER"]
-        targets = {doc.get("filename") or ""}
-        targets.update(f for f in os.listdir(folder) if f.startswith(f"{doc_id}_"))
-        paths = [os.path.join(folder, f) for f in targets if f and f not in keep]
-        if doc.get("vector_file"):
-            paths.append(os.path.join(BASE_DIR, "vectores", os.path.basename(doc["vector_file"])))
-        for path in paths:
-            try:
-                os.remove(path)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                app.logger.exception("No se pudo eliminar %s", path)
-    return jsonify(success=True, message="Document i fitxers associats eliminats correctament",
-                   deleted_id=doc_id)
+            return jsonify(success=False, error="No s'ha pogut actualitzar la base de continguts."), 500
+    return jsonify(success=True, message="Contingut retirat correctament", deleted_id=doc_id)
 
 
 @app.route("/api/analyze/<doc_id>", methods=["POST"])
@@ -878,12 +1040,12 @@ def api_analyze(doc_id):
         return jsonify(ok=False, error="Sessió no iniciada."), 401
     doc = find_doc(load_documents(), doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Document no trobat."), 404
+        return jsonify(ok=False, error="Contingut no trobat."), 404
     if doc["status"] != S_RD:
-        return jsonify(ok=False, error="El document no està pendent del Referent Departamental."), 409
+        return jsonify(ok=False, error="El contingut no està pendent del Referent Departamental."), 409
     filename = doc.get("filename") or ""
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Només es poden analitzar documents PDF."), 400
+        return jsonify(ok=False, error="Només es poden analitzar continguts PDF."), 400
     path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     simulated = not ai_agent_enabled("agente_claridad_activo")
     if not simulated:
@@ -909,7 +1071,7 @@ def api_analyze(doc_id):
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El document ja no existeix."), 404
+            return jsonify(ok=False, error="El contingut ja no existeix."), 404
         doc["referente_analysis_result"] = result
         doc["analysis_done"] = True
         save_documents(docs)
@@ -923,12 +1085,12 @@ def api_validate_normative(doc_id):
         return jsonify(ok=False, error="Sessió no iniciada."), 401
     doc = find_doc(load_documents(), doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Document no trobat."), 404
+        return jsonify(ok=False, error="Contingut no trobat."), 404
     if doc["status"] != S_UF:
-        return jsonify(ok=False, error="El document no està pendent de la Unitat Finalista."), 409
+        return jsonify(ok=False, error="El contingut no està pendent de la Unitat Finalista."), 409
     filename = doc.get("filename") or ""
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Només es poden validar documents PDF."), 400
+        return jsonify(ok=False, error="Només es poden validar continguts PDF."), 400
     path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     simulated = not ai_agent_enabled("agente_normativa_activo")
     if not simulated:
@@ -958,7 +1120,7 @@ def api_validate_normative(doc_id):
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El document ja no existeix."), 404
+            return jsonify(ok=False, error="El contingut ja no existeix."), 404
         doc["normative_analysis_result"] = result
         doc["normative_analysis_done"] = True
         save_documents(docs)
@@ -973,9 +1135,9 @@ def api_detect_duplicity(doc_id):
     docs = load_documents()
     doc = find_doc(docs, doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Document no trobat."), 404
+        return jsonify(ok=False, error="Contingut no trobat."), 404
     if doc["status"] != S_GCB:
-        return jsonify(ok=False, error="El document no està pendent del Gestor Coneixement Cord."), 409
+        return jsonify(ok=False, error="El contingut no està pendent del Gestor Coneixement Cord."), 409
     try:
         result = gestor_conocimiento.detect_document_duplicity(
             doc_id, docs, vectors_dir=os.path.join(BASE_DIR, "vectores"),
@@ -988,7 +1150,7 @@ def api_detect_duplicity(doc_id):
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El document ja no existeix."), 404
+            return jsonify(ok=False, error="El contingut ja no existeix."), 404
         doc["duplicity_result"] = result
         doc["duplicity_analysis_done"] = True
         save_documents(docs)
@@ -1003,14 +1165,14 @@ def api_check_fidelity(doc_id):
     docs = load_documents()
     doc = find_doc(docs, doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Document no trobat."), 404
+        return jsonify(ok=False, error="Contingut no trobat."), 404
     if doc["status"] != S_GCC:
-        return jsonify(ok=False, error="El document no està pendent del Gestor Coneixement Canal."), 409
+        return jsonify(ok=False, error="El contingut no està pendent del Gestor Coneixement Canal."), 409
     folder = app.config["UPLOAD_FOLDER"]
     filename = doc.get("filename") or ""
     adapted_path = os.path.join(folder, filename)
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Només es poden comprovar documents PDF."), 400
+        return jsonify(ok=False, error="Només es poden comprovar continguts PDF."), 400
     simulated = not ai_agent_enabled("agente_fidelidad_activo")
     if simulated:
         return save_fidelity_result(doc_id, simulated_ai_result("fidelitat"))
@@ -1019,7 +1181,7 @@ def api_check_fidelity(doc_id):
 
     sources = doc.get("unidades_base_origen") if isinstance(doc.get("unidades_base_origen"), list) else []
     if not sources:
-        return jsonify(ok=False, error="Aquest document no té documents font associats; "
+        return jsonify(ok=False, error="Aquest contingut no té continguts font associats; "
                                        "no hi ha res amb què comprovar-ne la fidelitat."), 409
     by_id = {d["id"]: d for d in docs}
     source_paths, missing = [], 0
@@ -1031,7 +1193,7 @@ def api_check_fidelity(doc_id):
         else:
             missing += 1
     if not source_paths:
-        return jsonify(ok=False, error="Cap dels documents font té un PDF disponible."), 409
+        return jsonify(ok=False, error="Cap dels continguts font té un PDF disponible."), 409
     api_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
     if not api_key or "tu_api_key" in api_key:
         return jsonify(ok=False, error="Falta configurar GEMINI_API_KEY (o GOOGLE_API_KEY) al fitxer .env."), 503
@@ -1045,7 +1207,7 @@ def api_check_fidelity(doc_id):
     if result.get("error"):  # respuesta no parseable: no se guarda como completada
         return jsonify(ok=False, error=result["mensaje"]), 502
     if missing:
-        result["nota"] = f"{missing} document(s) font no s'han pogut incloure perquè no tenen un PDF disponible."
+        result["nota"] = f"{missing} contingut(s) font no s'han pogut incloure perquè no tenen un PDF disponible."
     return save_fidelity_result(doc_id, result)
 
 
@@ -1054,14 +1216,14 @@ def save_fidelity_result(doc_id, result):
         docs = load_documents()
         doc = find_doc(docs, doc_id)
         if doc is None:
-            return jsonify(ok=False, error="El document ja no existeix."), 404
+            return jsonify(ok=False, error="El contingut ja no existeix."), 404
         doc["fidelity_analysis_result"] = result
         doc["fidelity_analysis_done"] = True
         save_documents(docs)
     return jsonify(ok=True, fidelity_analysis_result=result)
 
 
-ANNOTATED_RE = re.compile(r"(?:BCAC-[AB]-\d+|[0-9a-f]{8})(_referente)?_annotated\.pdf")  # ID actual o anterior (8 hex)
+ANNOTATED_RE = re.compile(r"(?:BCAC-[AB]-\d+(?:-v\d+)?|[0-9a-f]{8})(_referente)?_annotated\.pdf")  # ID actual o anterior (8 hex)
 
 
 def incoherencias_of(result):
@@ -1079,7 +1241,7 @@ def api_generate_annotated_pdf(doc_id):
         return jsonify(ok=False, error="Sessió no iniciada."), 401
     doc = find_doc(load_documents(), doc_id)
     if doc is None:
-        return jsonify(ok=False, error="Document no trobat."), 404
+        return jsonify(ok=False, error="Contingut no trobat."), 404
 
     results = {"normative": doc.get("normative_analysis_result"), "fidelity": doc.get("fidelity_analysis_result"),
                "referente": doc.get("referente_analysis_result")}
@@ -1090,7 +1252,7 @@ def api_generate_annotated_pdf(doc_id):
         order = {S_GCC: ["fidelity", "normative", "referente"], S_RD: ["referente", "normative", "fidelity"]}
         kind = next((k for k in order.get(doc["status"], ["normative", "fidelity", "referente"]) if results[k]), None)
     if not kind or not results[kind]:
-        return jsonify(ok=False, error="El document no té cap anàlisi d'IA previ."), 400
+        return jsonify(ok=False, error="El contingut no té cap anàlisi d'IA previ."), 400
     incoherencias = incoherencias_of(results[kind])
     if not incoherencias:
         return jsonify(ok=False, error="L'anàlisi no conté incoherències per anotar."), 400
@@ -1098,7 +1260,7 @@ def api_generate_annotated_pdf(doc_id):
     filename = doc.get("filename") or ""
     original = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     if not filename.lower().endswith(".pdf"):
-        return jsonify(ok=False, error="Només es poden anotar documents PDF."), 400
+        return jsonify(ok=False, error="Només es poden anotar continguts PDF."), 400
     if not os.path.isfile(original):
         return jsonify(ok=False, error="Fitxer físic no disponible"), 404
 
@@ -1109,7 +1271,7 @@ def api_generate_annotated_pdf(doc_id):
     saved, enriched = annotator(original, annotated, incoherencias)
     if not saved:
         return jsonify(ok=False, error="No s'ha pogut localitzar cap de les frases analitzades al PDF "
-                                       "(és un document escanejat o el text difereix?)."), 422
+                                       "(és un contingut escanejat o el text difereix?)."), 422
     pages = [i.get("page_number") for i in enriched]
     found = sum(1 for n in pages if n)
     message = f"S'han anotat {found} de {len(pages)} frases."
@@ -1150,6 +1312,18 @@ def download(doc_id):
     if not doc.get("filename") or not os.path.isfile(path):
         flash("Fitxer físic no disponible", "error")
         return redirect(url_for("dashboard"))
+    return send_from_directory(app.config["UPLOAD_FOLDER"], doc["filename"])
+
+
+@app.route("/download_retirat/<doc_id>/<int:version>")
+@login_required
+def download_retirat(doc_id, version):
+    """Original de un documento retirado. Un ID puede aparecer en varias versiones, por eso se identifica con la versión."""
+    doc = next((d for d in load_retirados() if d["id"] == doc_id and d.get("version") == version), None)
+    path = os.path.join(app.config["UPLOAD_FOLDER"], (doc or {}).get("filename") or "")
+    if doc is None or not doc.get("filename") or not os.path.isfile(path):
+        flash("Fitxer físic no disponible", "error")
+        return redirect(url_for("dashboard") + "#" + RETIRED_TAB["slug"])
     return send_from_directory(app.config["UPLOAD_FOLDER"], doc["filename"])
 
 
